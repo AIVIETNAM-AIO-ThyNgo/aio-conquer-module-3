@@ -1,0 +1,57 @@
+{
+  "canonical_path": "data/processed/E1-S6_canonical_modeling_dataset.csv",
+  "canonical_sha256": "96f79c15ff277bf0a8f8107a6313ac86e85888d4dbdbe7f7bd4ddc0c297b4da6",
+  "card": "E1-S6 [P0][Data] Publish Canonical Modeling Dataset & Data Dictionary",
+  "columns": [
+    "Date",
+    "return_1d",
+    "return_5d",
+    "return_10d",
+    "return_20d",
+    "volatility_5d",
+    "volatility_10d",
+    "volatility_20d",
+    "trend_10d",
+    "trend_20d",
+    "trend_60d",
+    "volume_ratio_20d",
+    "forward_return_5d",
+    "regime"
+  ],
+  "data_dictionary_path": "docs/E1-S6_data_dictionary.csv",
+  "data_dictionary_sha256": "3e478195e58d1a4ceae1d53b30f98f94f1070fa9296b91c266794a176817d6aa",
+  "feature_columns": [
+    "return_1d",
+    "return_5d",
+    "return_10d",
+    "return_20d",
+    "volatility_5d",
+    "volatility_10d",
+    "volatility_20d",
+    "trend_10d",
+    "trend_20d",
+    "trend_60d",
+    "volume_ratio_20d"
+  ],
+  "first_date": "2006-02-01",
+  "generated_at_utc": "2026-08-21T09:55:26.923932+00:00",
+  "last_date": "2026-08-13",
+  "notebook": "E1-S3_to_E1-S6_Data_Foundation_and_Regime_Construction.ipynb",
+  "package_versions": {
+    "numpy": "2.5.2",
+    "pandas": "3.0.5",
+    "yfinance": "1.6.0"
+  },
+  "python": "3.13.9",
+  "regime_column": "regime",
+  "regime_threshold": {
+    "equality_rule": "HighVol",
+    "method": "expanding median of values strictly before t",
+    "minimum_prior_observations": 252,
+    "volatility_column": "volatility_20d"
+  },
+  "rows": 5165,
+  "source_raw_path": "data/raw/E1-S1_SPY_OHLCV_auto_adjusted.csv",
+  "source_raw_sha256": "1007a7421e108dd8f9290e739540211291a5445ca21ed13f5a9aaa8f013d165d",
+  "target_column": "forward_return_5d"
+}
