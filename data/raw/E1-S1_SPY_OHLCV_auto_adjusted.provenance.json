@@ -1,0 +1,21 @@
+{
+  "auto_adjust": true,
+  "card": "E1-S1 [P0][Data] Acquire & Version Raw SPY OHLCV",
+  "columns": [
+    "Open",
+    "High",
+    "Low",
+    "Close",
+    "Volume"
+  ],
+  "downloaded_at_utc": "2026-08-21T09:53:37.172850+00:00",
+  "first_trading_date": "2005-01-03",
+  "last_trading_date": "2026-08-20",
+  "price_convention": "auto-adjusted OHLC; volume from yfinance",
+  "provider": "Yahoo Finance via yfinance",
+  "requested_end_date": null,
+  "requested_start_date": "2005-01-01",
+  "rows": 5442,
+  "sha256": "1007a7421e108dd8f9290e739540211291a5445ca21ed13f5a9aaa8f013d165d",
+  "ticker": "SPY"
+}
