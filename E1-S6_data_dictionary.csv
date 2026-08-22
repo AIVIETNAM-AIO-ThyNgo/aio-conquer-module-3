@@ -1,0 +1,15 @@
+column,role,dtype,formula,window,timestamp_semantics,unit,missing_value_policy,source
+Date,identifier,datetime64[ns],SPY trading date,none,prediction date t,date,not allowed in canonical rows,E1-S1 immutable SPY raw artifact
+return_1d,feature,float64,Close_t / Close_(t-1) - 1,1 trading observation,uses prices through t only,decimal return,warm-up row excluded at E1-S6,auto-adjusted Close
+return_5d,feature,float64,Close_t / Close_(t-5) - 1,5 trading observations,uses prices through t only,decimal return,warm-up rows excluded at E1-S6,auto-adjusted Close
+return_10d,feature,float64,Close_t / Close_(t-10) - 1,10 trading observations,uses prices through t only,decimal return,warm-up rows excluded at E1-S6,auto-adjusted Close
+return_20d,feature,float64,Close_t / Close_(t-20) - 1,20 trading observations,uses prices through t only,decimal return,warm-up rows excluded at E1-S6,auto-adjusted Close
+volatility_5d,feature,float64,"std(return_1d[t-4:t], ddof=1) * sqrt(252)",5 trading observations,right-aligned; uses returns through t only,annualized decimal volatility,warm-up rows excluded at E1-S6,derived from return_1d
+volatility_10d,feature,float64,"std(return_1d[t-9:t], ddof=1) * sqrt(252)",10 trading observations,right-aligned; uses returns through t only,annualized decimal volatility,warm-up rows excluded at E1-S6,derived from return_1d
+volatility_20d,feature,float64,"std(return_1d[t-19:t], ddof=1) * sqrt(252)",20 trading observations,right-aligned; uses returns through t only,annualized decimal volatility,warm-up rows excluded at E1-S6,derived from return_1d
+trend_10d,feature,float64,Close_t / mean(Close[t-9:t]) - 1,10 trading observations,right-aligned; uses prices through t only,decimal ratio minus one,warm-up rows excluded at E1-S6,auto-adjusted Close
+trend_20d,feature,float64,Close_t / mean(Close[t-19:t]) - 1,20 trading observations,right-aligned; uses prices through t only,decimal ratio minus one,warm-up rows excluded at E1-S6,auto-adjusted Close
+trend_60d,feature,float64,Close_t / mean(Close[t-59:t]) - 1,60 trading observations,right-aligned; uses prices through t only,decimal ratio minus one,warm-up rows excluded at E1-S6,auto-adjusted Close
+volume_ratio_20d,feature,float64,Volume_t / mean(Volume[t-19:t]),20 trading observations,right-aligned; uses volume through t only,ratio,warm-up rows excluded at E1-S6,SPY Volume
+forward_return_5d,target,float64,Close_(t+5) / Close_t - 1,5 subsequent trading observations,label attached to prediction date t; never enters X,decimal forward return,final five unavailable labels excluded at E1-S6,auto-adjusted Close
+regime,segment label,string,HighVol if volatility_20d >= median(prior volatility_20d); else LowVol,20-day volatility + expanding past-only threshold (min 252 observations),threshold excludes current and all future rows,"{LowVol, HighVol}",insufficient-history rows excluded at E1-S6,derived from volatility_20d
