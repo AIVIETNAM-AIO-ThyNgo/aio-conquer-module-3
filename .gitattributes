@@ -1,0 +1,20 @@
+# Line-ending policy for the E1 data foundation.
+#
+# Why this file exists (E4-S1 audit finding):
+# The E1-S6 manifest and the E1-S1 provenance record pin SHA-256 hashes for the
+# raw artifact, the canonical dataset and the data dictionary. A hash is over
+# BYTES, so any CRLF/LF conversion -- by git, by an editor, or by a sync tool --
+# changes the hash even though not a single number changed. That silently
+# disarms the integrity check the audit depends on.
+#
+# Keep the hashed artifacts byte-for-byte identical on every platform.
+
+# Default: normalize text to LF inside the repository.
+* text=auto eol=lf
+
+# Hash-pinned artifacts: never convert, in either direction.
+*.csv   -text
+*.json  -text
+
+# Notebooks are JSON; converting them also breaks diffs and nbformat round-trips.
+*.ipynb -text
