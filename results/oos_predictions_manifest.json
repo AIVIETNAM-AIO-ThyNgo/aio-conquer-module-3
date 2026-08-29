@@ -1,0 +1,25 @@
+{
+  "card": "E2-S4 [P0][Model] Generate Canonical OOS Prediction Table",
+  "generated_at_utc": "2026-08-29T11:17:24.198548+00:00",
+  "source_predictions_path": "E2-S2_Train_Minimal_LightGBM_Regressor/output/lightgbm_oos_predictions.csv",
+  "source_predictions_sha256": "760a3024d951d2ceb006e6726d05cd875f59fcd5a4fefe2df165eb8e25843958",
+  "output_path": "results/oos_predictions.csv",
+  "output_columns": [
+    "Date",
+    "prediction",
+    "actual_return_5d",
+    "regime",
+    "fold_id"
+  ],
+  "n_rows": 3905,
+  "n_unique_dates": 3905,
+  "n_folds": 6,
+  "date_range": [
+    "2011-02-02",
+    "2026-08-13"
+  ],
+  "package_versions": {
+    "numpy": "2.5.2",
+    "pandas": "3.0.5"
+  }
+}

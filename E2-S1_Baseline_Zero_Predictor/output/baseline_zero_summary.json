@@ -1,0 +1,25 @@
+{
+  "card": "E2-S1 [P0][Model] Baseline y_hat=0",
+  "generated_at_utc": "2026-08-29T11:17:23.187402+00:00",
+  "target_column": "forward_return_5d",
+  "canonical_dataset_path": "data/processed/E1-S6_canonical_modeling_dataset.csv",
+  "canonical_dataset_sha256": "96f79c15ff277bf0a8f8107a6313ac86e85888d4dbdbe7f7bd4ddc0c297b4da6",
+  "split_params": {
+    "n_folds": 6,
+    "min_train_size": 1260,
+    "horizon_trading_days": 5
+  },
+  "overall_metrics": {
+    "n_oos_rows": 3905,
+    "n_folds": 6,
+    "mae": 0.015956810096261882,
+    "prediction_correlation": NaN,
+    "directional_hit_rate": NaN
+  },
+  "directional_hit_rate_zero_prediction_convention": "A prediction of exactly 0 carries no sign, so it cannot be scored as a correct or incorrect directional call. Rows with y_pred == 0 are excluded from the directional hit rate's numerator and denominator. If every prediction in a fold is exactly 0, the hit rate is undefined and reported as NaN -- never silently as 0.0 or 0.5. The same reasoning makes prediction correlation undefined (zero variance) for an all-zero predictor; it is reported as NaN for the same reason.",
+  "package_versions": {
+    "numpy": "2.5.2",
+    "pandas": "3.0.5"
+  },
+  "python": "3.13.5"
+}
