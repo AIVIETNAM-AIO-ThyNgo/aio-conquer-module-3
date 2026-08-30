@@ -688,3 +688,238 @@ from generate_oos_predictions import (  # noqa: E402
 
 MAX_TRADING_GAP_DAYS = 7
 MIN_ADEQUATE_FIRST_FOLD_TRAIN_SIZE = 1000
+
+
+# ---------------------------------------------------------------------------
+# Stage E: Regime-conditioned evaluation (E2-S5)
+# ---------------------------------------------------------------------------
+
+# These mirror the original E2-S5 card's constants but are driven from
+# config paths instead of hardcoded values.
+REGIMES = ["LowVol", "HighVol"]
+SCOPES = ["Overall"] + REGIMES
+MODELS = ["baseline_zero", "lightgbm"]
+
+# Columns the canonical OOS table must carry for regime evaluation.
+REQUIRED_OOS_COLUMNS = ["Date", "prediction", "actual_return_5d", "regime", "fold_id"]
+REQUIRED_BASELINE_COLUMNS = ["Date", "regime", "y_true", "y_pred"]
+
+
+class RegimeEvaluationError(Exception):
+    """Raised when regime evaluation input validation fails."""
+
+
+def run_regime_evaluation(cfg: Config, force: bool = False) -> StageContract:
+    """Stage E: evaluate baseline and LightGBM across Overall/LowVol/HighVol.
+
+    Wraps the E2-S5 logic inside the unified contract-chaining framework so
+    the regime evaluation has the same staleness detection, loud failures,
+    and single-config sourcing as every other stage.
+    """
+    canonical_oos_path = cfg.resolve(cfg.paths.canonical_oos_table)
+    baseline_pred_path = (
+        cfg.resolve(cfg.paths.baseline_output_dir) / "baseline_zero_oos_predictions.csv"
+    )
+    output_dir = cfg.resolve(cfg.paths.regime_eval_output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    perf_path = output_dir / "regime_performance.csv"
+    comparison_path = output_dir / "regime_comparison.csv"
+    summary_path = output_dir / "regime_performance_summary.json"
+
+    # --- input validation: schema, emptiness, regime labels, finiteness ---
+    _require_file(canonical_oos_path, "canonical OOS table")
+    _require_file(baseline_pred_path, "baseline OOS predictions")
+
+    canonical_df = pd.read_csv(canonical_oos_path, parse_dates=["Date"])
+    baseline_df = pd.read_csv(baseline_pred_path, parse_dates=["Date"])
+
+    _require_columns(canonical_df, REQUIRED_OOS_COLUMNS, "canonical OOS table")
+    _require_columns(baseline_df, REQUIRED_BASELINE_COLUMNS, "baseline OOS predictions")
+    _require_non_empty(canonical_df, "canonical OOS table")
+    _require_non_empty(baseline_df, "baseline OOS predictions")
+
+    # Regime labels must be exactly {LowVol, HighVol} in both frames.
+    _validate_regime_labels(canonical_df, cfg.regime.column)
+    _validate_regime_labels(baseline_df, cfg.regime.column)
+
+    # No NaN in the columns we score on.
+    _require_finite(canonical_df[["prediction", "actual_return_5d"]].to_numpy(),
+                    "canonical OOS prediction/actual")
+    _require_finite(baseline_df[["y_true", "y_pred"]].to_numpy(),
+                    "baseline y_true/y_pred")
+
+    # --- contract + staleness check ---
+    input_hashes = {
+        str(canonical_oos_path): file_hash(canonical_oos_path),
+        str(baseline_pred_path): file_hash(baseline_pred_path),
+    }
+    proposed = StageContract(
+        stage_name="regime_evaluation",
+        config_hash=cfg.config_hash,
+        input_hashes=input_hashes,
+        params={"scopes": SCOPES, "models": MODELS, "regimes": REGIMES},
+    )
+
+    outputs_exist = perf_path.exists() and comparison_path.exists() and summary_path.exists()
+    if outputs_exist and not force:
+        contract_path = cfg.resolve(cfg.paths.pipeline_manifest)
+        if contract_path.exists():
+            previous = _load_stage_contract(contract_path, "regime_evaluation")
+            if previous is not None:
+                check_inputs_unchanged(previous, input_hashes, cfg.config_hash)
+                check_outputs_current(previous)
+                return previous
+
+    # --- load & reshape to a common (Date, regime, y_true, y_pred) frame ---
+    lightgbm_df = pd.DataFrame({
+        "Date": canonical_df["Date"],
+        "regime": canonical_df[cfg.regime.column],
+        "y_true": canonical_df["actual_return_5d"],
+        "y_pred": canonical_df["prediction"],
+    })
+    baseline_ready = baseline_df[["Date", cfg.regime.column, "y_true", "y_pred"]].copy()
+    baseline_ready = baseline_ready.rename(columns={cfg.regime.column: "regime"})
+
+    # Fairness check: both models scored on the exact same OOS rows.
+    _assert_same_oos_rows(baseline_ready, lightgbm_df)
+
+    # --- score ---
+    all_rows = []
+    for model_name, frame in [("baseline_zero", baseline_ready), ("lightgbm", lightgbm_df)]:
+        for scope in SCOPES:
+            mask = scope_mask(frame, scope)
+            subset = frame[mask]
+            y_true = subset["y_true"].to_numpy(dtype=float)
+            y_pred = subset["y_pred"].to_numpy(dtype=float)
+            n = len(subset)
+            all_rows.append({
+                "model": model_name,
+                "scope": scope,
+                "n": n,
+                "mae": mae(y_true, y_pred) if n else float("nan"),
+                "prediction_correlation": prediction_correlation(y_true, y_pred) if n else float("nan"),
+                "directional_hit_rate": directional_hit_rate(y_true, y_pred) if n else float("nan"),
+                "predictions_nearly_constant": (bool(np.std(y_pred) < cfg.model.nearly_constant_std_threshold) if n else None),
+                "date_start": subset["Date"].min().strftime("%Y-%m-%d") if n else None,
+                "date_end": subset["Date"].max().strftime("%Y-%m-%d") if n else None,
+            })
+
+    results = pd.DataFrame(all_rows)
+    comparison = _build_comparison_table(results)
+
+    results.to_csv(perf_path, index=False)
+    comparison.to_csv(comparison_path, index=False)
+
+    summary = {
+        "card": "E2-S5 [P0][Model] Evaluate Overall, Low-Vol & High-Vol Performance",
+        "generated_at_utc": now_utc_iso(),
+        "canonical_oos_predictions_path": str(canonical_oos_path.relative_to(cfg._repo_root)).replace("\\", "/"),
+        "canonical_oos_predictions_sha256": file_hash(canonical_oos_path),
+        "baseline_oos_predictions_path": str(baseline_pred_path.relative_to(cfg._repo_root)).replace("\\", "/"),
+        "baseline_oos_predictions_sha256": file_hash(baseline_pred_path),
+        "scopes": SCOPES,
+        "models": MODELS,
+        "no_cherry_picking_declaration": (
+            "This table reports N, MAE, prediction_correlation and directional_hit_rate for "
+            "every (model, scope) pair unconditionally -- baseline_zero and lightgbm, each "
+            "across Overall/LowVol/HighVol -- regardless of which numbers look favorable. No "
+            "metric or scope is omitted based on its value."
+        ),
+        "config_hash": cfg.config_hash,
+        "results": all_rows,
+        "package_versions": {"numpy": np.__version__, "pandas": pd.__version__},
+        "python": platform.python_version(),
+    }
+    summary_path.write_text(json.dumps(summary, indent=2, default=str), encoding="utf-8")
+
+    return StageContract(
+        stage_name="regime_evaluation",
+        config_hash=cfg.config_hash,
+        input_hashes=input_hashes,
+        output_hashes={
+            str(perf_path): file_hash(perf_path),
+            str(comparison_path): file_hash(comparison_path),
+        },
+        output_records=[str(summary_path)],
+        params=proposed.params,
+        generated_at_utc=now_utc_iso(),
+    )
+
+
+# ---------------------------------------------------------------------------
+# Helpers for regime evaluation
+# ---------------------------------------------------------------------------
+
+def _require_non_empty(df: pd.DataFrame, context: str) -> None:
+    if df.empty:
+        raise EmptyDataError(f"{context} is empty")
+
+
+def _require_file(path: Path, label: str) -> None:
+    if not path.exists():
+        raise FileNotFoundError(f"{label} not found: {path} -- run the prerequisite stage first")
+
+
+def _require_columns(df: pd.DataFrame, columns: list[str], context: str) -> None:
+    missing = [c for c in columns if c not in df.columns]
+    if missing:
+        raise MissingColumnError(f"{context}: missing required columns {missing}")
+
+
+def _validate_regime_labels(df: pd.DataFrame, regime_col: str) -> None:
+    labels = set(df[regime_col].dropna().unique())
+    if not labels.issubset({"LowVol", "HighVol"}):
+        raise InvalidRegimeError(
+            f"regime column contains invalid values: {labels - {'LowVol', 'HighVol'}}"
+        )
+
+
+def _require_finite(block: np.ndarray, context: str) -> None:
+    if not np.isfinite(block).all():
+        raise NonFinitePredictionsError(f"non-finite values found in {context}")
+
+
+def _assert_same_oos_rows(baseline_df: pd.DataFrame, lightgbm_df: pd.DataFrame) -> None:
+    """The baseline/LightGBM comparison is only fair if both are scored on
+    exactly the same OOS rows -- same dates, same regime labels, same
+    target values. Re-verified here rather than assumed."""
+    if not baseline_df["Date"].is_unique or not lightgbm_df["Date"].is_unique:
+        raise RegimeEvaluationError("a source predictions file has duplicate dates -- cannot compare fairly")
+    baseline_dates = np.sort(baseline_df["Date"].to_numpy())
+    lightgbm_dates = np.sort(lightgbm_df["Date"].to_numpy())
+    if not np.array_equal(baseline_dates, lightgbm_dates):
+        raise RegimeEvaluationError("baseline and LightGBM are not scored on the same OOS dates")
+    merged = baseline_df.merge(lightgbm_df, on="Date", suffixes=("_baseline", "_lightgbm"))
+    if not (merged["regime_baseline"] == merged["regime_lightgbm"]).all():
+        raise RegimeEvaluationError("baseline and LightGBM disagree on the regime label for at least one shared date")
+    if not np.allclose(merged["y_true_baseline"].to_numpy(dtype=float),
+                       merged["y_true_lightgbm"].to_numpy(dtype=float)):
+        raise RegimeEvaluationError("baseline and LightGBM disagree on actual_return_5d for at least one shared date")
+
+
+def scope_mask(df: pd.DataFrame, scope: str) -> pd.Series:
+    if scope == "Overall":
+        return pd.Series(True, index=df.index)
+    if scope not in REGIMES:
+        raise ValueError(f"unknown scope {scope!r} -- expected one of {SCOPES}")
+    return df["regime"] == scope
+
+
+def _build_comparison_table(results: pd.DataFrame) -> pd.DataFrame:
+    baseline = results[results["model"] == "baseline_zero"].set_index("scope")
+    lightgbm = results[results["model"] == "lightgbm"].set_index("scope")
+    rows = []
+    for scope in SCOPES:
+        rows.append({
+            "scope": scope,
+            "n": int(baseline.loc[scope, "n"]),
+            "baseline_zero_mae": baseline.loc[scope, "mae"],
+            "lightgbm_mae": lightgbm.loc[scope, "mae"],
+            "mae_improvement_over_baseline": baseline.loc[scope, "mae"] - lightgbm.loc[scope, "mae"],
+            "baseline_zero_prediction_correlation": baseline.loc[scope, "prediction_correlation"],
+            "lightgbm_prediction_correlation": lightgbm.loc[scope, "prediction_correlation"],
+            "baseline_zero_directional_hit_rate": baseline.loc[scope, "directional_hit_rate"],
+            "lightgbm_directional_hit_rate": lightgbm.loc[scope, "directional_hit_rate"],
+        })
+    return pd.DataFrame(rows)

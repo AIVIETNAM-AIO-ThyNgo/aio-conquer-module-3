@@ -282,7 +282,7 @@ def test_pipeline_manifest_aggregates_all_stages(tmp_path):
     manifest = json.loads(manifest_path.read_text())
     assert "stages" in manifest
     assert set(manifest["stages"].keys()) == {
-        "data_foundation", "baseline", "lightgbm", "validation", "canonical_oos"
+        "data_foundation", "baseline", "lightgbm", "validation", "canonical_oos", "regime_evaluation"
     }
     # Every stage's config_hash matches the top-level config_hash.
     assert manifest["config_hash"] == cfg.config_hash

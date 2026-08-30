@@ -79,3 +79,4 @@ paths:
   canonical_oos_table: "results/oos_predictions.csv"
   canonical_oos_manifest: "results/oos_predictions_manifest.json"
   pipeline_manifest: "pipeline_manifest.json"
+  regime_eval_output_dir: "E2-S5_Evaluate_Overall_LowVol_HighVol_Performance/output"

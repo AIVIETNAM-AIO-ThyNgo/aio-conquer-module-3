@@ -12,6 +12,7 @@ Stages, in order:
     3. lightgbm         -> lightgbm_oos_predictions.csv, fold_metrics, summary
     4. validation       -> fold_boundary_audit.csv, walk_forward_validation_summary.json
     5. canonical_oos    -> results/oos_predictions.csv + manifest
+    6. regime_evaluation-> regime_performance.csv, regime_comparison.csv, summary
 
 Each stage's contract is recorded in pipeline_manifest.json. On the next run,
 the pipeline compares the contract the new run *would* produce against the
@@ -30,7 +31,7 @@ from pathlib import Path
 from .config import Config, load_config
 from .contract import StageContract, StaleOutputError, now_utc_iso
 from .data_foundation import run_data_foundation
-from .model import run_baseline, run_lightgbm, run_validation, run_canonical_oos
+from .model import run_baseline, run_lightgbm, run_validation, run_canonical_oos, run_regime_evaluation
 
 
 def _save_master_manifest(cfg, contracts: dict[str, StageContract]) -> None:
@@ -75,10 +76,16 @@ def run_all(cfg: Config, force: bool = False) -> dict[str, StageContract]:
     print(f"  -> {contracts['validation'].generated_at_utc}")
 
     print("\n" + "=" * 60)
-    print("Stage 5/5: canonical_oos")
+    print("Stage 5/6: canonical_oos")
     print("=" * 60)
     contracts["canonical_oos"] = run_canonical_oos(cfg, force=force)
     print(f"  -> {contracts['canonical_oos'].generated_at_utc}")
+
+    print("\n" + "=" * 60)
+    print("Stage 6/6: regime_evaluation")
+    print("=" * 60)
+    contracts["regime_evaluation"] = run_regime_evaluation(cfg, force=force)
+    print(f"  -> {contracts['regime_evaluation'].generated_at_utc}")
 
     _save_master_manifest(cfg, contracts)
     return contracts
@@ -92,6 +99,7 @@ def run_single(cfg: Config, stage: str, force: bool = False) -> StageContract:
         "lightgbm": run_lightgbm,
         "validation": run_validation,
         "canonical_oos": run_canonical_oos,
+        "regime_evaluation": run_regime_evaluation,
     }
     if stage not in runners:
         raise ValueError(f"unknown stage: {stage}. Choose from: {list(runners)}")
@@ -106,7 +114,7 @@ def main(argv: list[str] | None = None) -> int:
         "stage",
         nargs="?",
         default=None,
-        help="Run a single stage (data_foundation|baseline|lightgbm|validation|canonical_oos). "
+        help="Run a single stage (data_foundation|baseline|lightgbm|validation|canonical_oos|regime_evaluation). "
              "If omitted, runs all stages in order.",
     )
     parser.add_argument(

@@ -85,6 +85,7 @@ class PathsConfig:
     canonical_oos_table: str
     canonical_oos_manifest: str
     pipeline_manifest: str
+    regime_eval_output_dir: str
 
 
 @dataclass(frozen=True)
