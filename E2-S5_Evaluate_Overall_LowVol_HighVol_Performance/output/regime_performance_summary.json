@@ -1,0 +1,92 @@
+{
+  "card": "E2-S5 [P0][Model] Evaluate Overall, Low-Vol & High-Vol Performance",
+  "generated_at_utc": "2026-08-30T00:30:49.618565+00:00",
+  "canonical_oos_predictions_path": "results/oos_predictions.csv",
+  "canonical_oos_predictions_sha256": "f8bee620378ef2737725ada548fc8aac15793b3623d89de2bb238247b768ec39",
+  "baseline_oos_predictions_path": "E2-S1_Baseline_Zero_Predictor/output/baseline_zero_oos_predictions.csv",
+  "baseline_oos_predictions_sha256": "1988a9aaf13a1f81313393200ea97f90a54ea4967a8fd1d56dffb76a8e6dbcd4",
+  "scopes": [
+    "Overall",
+    "LowVol",
+    "HighVol"
+  ],
+  "models": [
+    "baseline_zero",
+    "lightgbm"
+  ],
+  "directional_hit_rate_zero_prediction_convention": "A prediction of exactly 0 carries no sign, so it cannot be scored as a correct or incorrect directional call. Rows with y_pred == 0 are excluded from the directional hit rate's numerator and denominator. If every prediction in a fold is exactly 0, the hit rate is undefined and reported as NaN -- never silently as 0.0 or 0.5. The same reasoning makes prediction correlation undefined (zero variance) for an all-zero predictor; it is reported as NaN for the same reason.",
+  "no_cherry_picking_declaration": "This table reports N, MAE, prediction_correlation and directional_hit_rate for every (model, scope) pair unconditionally -- baseline_zero and lightgbm, each across Overall/LowVol/HighVol -- regardless of which numbers look favorable. No metric or scope is omitted based on its value.",
+  "results": [
+    {
+      "model": "baseline_zero",
+      "scope": "Overall",
+      "n": 3905,
+      "mae": 0.015956810096261882,
+      "prediction_correlation": NaN,
+      "directional_hit_rate": NaN,
+      "predictions_nearly_constant": true,
+      "date_start": "2011-02-02",
+      "date_end": "2026-08-13"
+    },
+    {
+      "model": "baseline_zero",
+      "scope": "LowVol",
+      "n": 2216,
+      "mae": 0.011783705384414976,
+      "prediction_correlation": NaN,
+      "directional_hit_rate": NaN,
+      "predictions_nearly_constant": true,
+      "date_start": "2011-02-02",
+      "date_end": "2026-07-31"
+    },
+    {
+      "model": "baseline_zero",
+      "scope": "HighVol",
+      "n": 1689,
+      "mae": 0.02143200254235587,
+      "prediction_correlation": NaN,
+      "directional_hit_rate": NaN,
+      "predictions_nearly_constant": true,
+      "date_start": "2011-03-10",
+      "date_end": "2026-08-13"
+    },
+    {
+      "model": "lightgbm",
+      "scope": "Overall",
+      "n": 3905,
+      "mae": 0.016055945000162733,
+      "prediction_correlation": 0.07885203786714556,
+      "directional_hit_rate": 0.5492957746478874,
+      "predictions_nearly_constant": false,
+      "date_start": "2011-02-02",
+      "date_end": "2026-08-13"
+    },
+    {
+      "model": "lightgbm",
+      "scope": "LowVol",
+      "n": 2216,
+      "mae": 0.011715302328476417,
+      "prediction_correlation": 0.01911942986036661,
+      "directional_hit_rate": 0.5500902527075813,
+      "predictions_nearly_constant": false,
+      "date_start": "2011-02-02",
+      "date_end": "2026-07-31"
+    },
+    {
+      "model": "lightgbm",
+      "scope": "HighVol",
+      "n": 1689,
+      "mae": 0.021750950423760657,
+      "prediction_correlation": 0.09182465253733736,
+      "directional_hit_rate": 0.5482534043812907,
+      "predictions_nearly_constant": false,
+      "date_start": "2011-03-10",
+      "date_end": "2026-08-13"
+    }
+  ],
+  "package_versions": {
+    "numpy": "2.5.2",
+    "pandas": "3.0.5"
+  },
+  "python": "3.13.5"
+}
