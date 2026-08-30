@@ -2,23 +2,110 @@
 
 Research question: does a LightGBM signal for SPY five-trading-day forward returns retain different genuine out-of-sample predictive performance in Low-Vol versus High-Vol regimes?
 
-This branch implements the Trello Data Foundation cards through E1-S6:
+## Unified Pipeline (E3-S2)
 
-- [E1-S1 — Acquire & Version Raw SPY OHLCV](https://trello.com/c/XZnNG075)
-- [E1-S2 — Validate Raw Market Data](https://trello.com/c/ylsf1Ag0)
-- [E1-S3 — Build Returns & 5-Trading-Day Forward Target](https://trello.com/c/dRR58WDg)
-- [E1-S4 — Build Historical Feature Set](https://trello.com/c/1nBr3JrS)
-- [E1-S5 — Construct Leakage-Safe Low/High Volatility Regime](https://trello.com/c/G8hsrnJR)
-- [E1-S6 — Publish Canonical Modeling Dataset & Data Dictionary](https://trello.com/c/4wwdJQnv)
+The entire execution path from raw SPY data to processed dataset, walk-forward training, OOS predictions, and evaluation outputs is now a single documented, deterministic pipeline:
+
+```
+python -m E3-S2_Data_Model_Integration_Flow.pipeline.run_pipeline          # single entry point
+```
+
+It runs five stages in order:
+
+| Stage | Module | Outputs |
+|---|---|---|
+| 1. data_foundation | `pipeline/data_foundation.py` | raw CSV, provenance, canonical CSV, manifest, data dictionary |
+| 2. baseline | `pipeline/model.py` | baseline_zero_oos_predictions.csv, fold_metrics, summary |
+| 3. lightgbm | `pipeline/model.py` | lightgbm_oos_predictions.csv, fold_metrics, summary |
+| 4. validation | `pipeline/model.py` | fold_boundary_audit.csv, walk_forward_validation_summary.json |
+| 5. canonical_oos | `pipeline/model.py` | results/oos_predictions.csv + manifest |
+
+### Single source of truth
+
+All configuration lives in `E3-S2_Data_Model_Integration_Flow/pipeline_config.yaml`. Every parameter the pipeline needs — data acquisition, feature engineering, regime construction, walk-forward splitting, model training, and output paths — is declared there. No stage contains hardcoded constants; each receives what it needs from the Config object.
+
+### Hash chaining & staleness detection
+
+Every stage records a `StageContract` (`pipeline/contract.py`) that captures:
+- the hash of `pipeline_config.yaml`,
+- the hashes of every input artifact consumed,
+- the hashes of every output artifact produced,
+- the timestamp of the run.
+
+On the next run, the pipeline compares the contract the new run *would* produce against the recorded one. If inputs changed but outputs weren't regenerated, `StaleOutputError` is raised — so a stale downstream output can never be mistaken for a current one.
+
+This catches every edge case named on the card:
+- **Partial rerun mixing old/new artifacts**: input hash mismatch vs recorded output hash → StaleOutputError.
+- **Hidden local paths**: every path is resolved from `Config.resolve()` and recorded as an absolute path in the contract; a path that drifts between machines is visible.
+- **Config mismatch between data/model modules**: every stage records `config_hash`; a stage whose recorded config_hash differs from the current one is stale.
+- **API failure leaving old raw file silently reused**: the raw file's hash is recorded; a download failure that leaves the old file in place produces a different hash than a successful refresh would, and the downstream canonical dataset is flagged as stale.
+
+### Reproduce
+
+```bash
+python -m E3-S2_Data_Model_Integration_Flow.pipeline.run_pipeline            # run all stages
+python -m E3-S2_Data_Model_Integration_Flow.pipeline.run_pipeline baseline   # run a single stage
+python -m E3-S2_Data_Model_Integration_Flow.pipeline.run_pipeline --force    # regenerate all outputs
+
+python -m pytest E3-S2_Data_Model_Integration_Flow/pipeline/tests/test_pipeline.py -v
+python -m pytest tests/test_E1_S6_canonical_dataset.py -v
+python -m pytest E2-S1_Baseline_Zero_Predictor/tests/test_baseline_zero.py -v
+python -m pytest E2-S2_Train_Minimal_LightGBM_Regressor/tests/test_train_lightgbm.py -v
+python -m pytest E2-S3_Leakage_Safe_Walk_Forward_Validation/tests/test_walk_forward_validation.py -v
+python -m pytest E2-S4_Generate_Canonical_OOS_Prediction_Table/tests/test_generate_oos_predictions.py -v
+```
 
 ## Primary artifacts
 
-- `E1-S3_to_E1-S6_Data_Foundation_and_Regime_Construction.ipynb`: executable implementation, manual spot checks, charts, and quality gates.
+### E3-S2: Unified Pipeline (new)
+
+- `E3-S2_Data_Model_Integration_Flow/pipeline_config.yaml`: single source of truth for all parameters.
+- `E3-S2_Data_Model_Integration_Flow/pipeline/run_pipeline.py`: single entry point.
+- `E3-S2_Data_Model_Integration_Flow/pipeline/config.py`: loads/validates YAML into frozen dataclasses.
+- `E3-S2_Data_Model_Integration_Flow/pipeline/contract.py`: StageContract with hash chaining.
+- `E3-S2_Data_Model_Integration_Flow/pipeline/data_foundation.py`: E1-S3→E1-S6 logic ported from the notebook.
+- `E3-S2_Data_Model_Integration_Flow/pipeline/model.py`: walk-forward training + OOS prediction (reuses E2-S1's `splits.py` and `metrics.py` unchanged).
+- `E3-S2_Data_Model_Integration_Flow/pipeline/tests/test_pipeline.py`: 20 tests for the unified pipeline.
+- pipeline_manifest.json: aggregated contract of all stages (generated at repo root).
+
+### E1: Data Foundation
+
 - `data/raw/E1-S1_SPY_OHLCV_auto_adjusted.csv`: immutable auto-adjusted SPY OHLCV input.
-- `data/raw/E1-S1_SPY_OHLCV_auto_adjusted.provenance.json`: source, date range, acquisition convention, and raw SHA-256.
+- `data/raw/E1-S1_SPY_OHLCV_auto_adjusted.provenance.json`: source, date range, acquisition convention, raw SHA-256.
 - `data/processed/E1-S6_canonical_modeling_dataset.csv`: the only admitted modeling row set.
-- `data/processed/E1-S6_dataset_manifest.json`: schema, hashes, package versions, and regime definition.
-- `docs/E1-S6_data_dictionary.csv`: formula, window, units, role, timestamp semantics, and missing-value policy for every canonical column.
+- `data/processed/E1-S6_dataset_manifest.json`: schema, hashes, package versions, regime definition.
+- `docs/E1-S6_data_dictionary.csv`: formula, window, units, role, timestamp semantics, missing-value policy for every canonical column.
+- `E1-S3_to_E1-S6_Data_Foundation_and_Regime_Construction.ipynb`: original notebook (superseded by the pipeline but retained for reference).
+- `tests/test_E1_S6_canonical_dataset.py`: independent verification of the E1-S6 canonical dataset.
+
+### E2: Model Stages (original, unchanged)
+
+The pipeline reuses the shared `splits.py` and `metrics.py` from E2-S1 rather than reimplementing them, so the baseline/LightGBM/validation comparison remains valid by construction:
+
+- `E2-S1_Baseline_Zero_Predictor/` — baseline y_hat=0, shared splits/metrics
+  - `run_baseline.py`, `splits.py`, `metrics.py`, `README.md`
+  - `output/baseline_zero_oos_predictions.csv`, `output/baseline_zero_fold_metrics.csv`, `output/baseline_zero_summary.json`
+  - `tests/test_baseline_zero.py`
+- `E2-S2_Train_Minimal_LightGBM_Regressor/` — LightGBM training
+  - `train_lightgbm.py`, `README.md`
+  - `output/lightgbm_oos_predictions.csv`, `output/lightgbm_fold_metrics.csv`, `output/lightgbm_summary.json`
+  - `tests/test_train_lightgbm.py`
+- `E2-S3_Leakage_Safe_Walk_Forward_Validation/` — walk-forward validation audit
+  - `validate_walk_forward.py`, `README.md`
+  - `output/fold_boundary_audit.csv`, `output/walk_forward_validation_summary.json`
+  - `tests/test_walk_forward_validation.py`
+- `E2-S4_Generate_Canonical_OOS_Prediction_Table/` — canonical OOS table
+  - `generate_oos_predictions.py`, `README.md`
+  - `tests/test_generate_oos_predictions.py`
+
+### E4: Leakage Audit
+
+- `docs/E4-S1_leakage_audit_record.md`: pre-model leakage & data quality gate audit record.
+
+### Results
+
+- `results/oos_predictions.csv`: canonical OOS prediction table (one row per genuine OOS prediction).
+- `results/oos_predictions_manifest.json`: manifest for the canonical OOS table.
 
 ## Frozen E1-S4 features
 
@@ -35,19 +122,6 @@ Every feature uses information available at or before prediction date `t`. The t
 
 `volatility_20d` is compared with the expanding median of 20-day volatility values strictly before `t`. The threshold requires at least 252 prior volatility observations. Equality is classified as `HighVol`; no smoothing or full-sample threshold is used.
 
-## Reproduce
-
-```bash
-python -m venv .venv
-source .venv/bin/activate
-python -m pip install -r requirements.txt
-python -m jupyter nbconvert --execute --to notebook --inplace \
-  E1-S3_to_E1-S6_Data_Foundation_and_Regime_Construction.ipynb
-python tests/test_E1_S6_canonical_dataset.py
-```
-
-The committed raw artifact is reused on rerun, so Yahoo history cannot be silently revised. Delete neither the raw CSV nor its provenance file during a normal reproduction run.
-
 ## Scope boundary
 
-This work establishes the E1 modeling dataset only. LightGBM training, purged walk-forward splits, canonical OOS predictions, and regime-conditioned evaluation belong to E2.
+This work establishes the full E1→E2 pipeline from raw data to OOS predictions. Regime-conditioned evaluation and reporting belong to later stories, which should read `results/oos_predictions.csv` rather than either model's raw `output/*_oos_predictions.csv`.

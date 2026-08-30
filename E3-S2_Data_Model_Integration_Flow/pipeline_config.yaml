@@ -1,0 +1,81 @@
+# pipeline_config.yaml
+# =============================================================================
+# Single source of truth for the SPY modeling pipeline.
+#
+# Every parameter the pipeline needs -- data acquisition, feature engineering,
+# regime construction, walk-forward splitting, model training, and output
+# paths -- lives here. No hardcoded constants in any stage module; each stage
+# receives what it needs from the Config object loaded from this file.
+#
+# The pipeline hashes this file and records the hash in every stage manifest.
+# If the config drifts between runs, the hash chain detects it.
+# =============================================================================
+
+data:
+  ticker: "SPY"
+  start_date: "2005-01-01"
+  end_date: null          # null = download through the most recent trading day
+  auto_adjust: true
+  trading_days_per_year: 252
+  ohlcv_columns:
+    - Open
+    - High
+    - Low
+    - Close
+    - Volume
+
+features:
+  return_windows: [5, 10, 20]
+  volatility_windows: [5, 10, 20]
+  trend_windows: [10, 20, 60]
+  volume_ma_window: 20
+
+target:
+  column: "forward_return_5d"
+  horizon_trading_days: 5
+
+regime:
+  column: "regime"
+  volatility_column: "volatility_20d"
+  threshold_column: "historical_volatility_threshold_20d"
+  min_historical_observations: 252
+  equality_rule: "HighVol"   # other valid value: "LowVol"
+
+model:
+  seed: 42
+  horizon_trading_days: 5
+  min_train_size: 1260       # ~5 trading years
+  n_folds: 6
+  nearly_constant_std_threshold: 1e-6
+  lightgbm_params:
+    objective: "regression"
+    metric: "mae"
+    n_estimators: 200
+    max_depth: 4
+    num_leaves: 15
+    learning_rate: 0.05
+    min_child_samples: 30
+    subsample: 0.8
+    subsample_freq: 1
+    colsample_bytree: 0.8
+    reg_alpha: 0.0
+    reg_lambda: 1.0
+    verbosity: -1
+    deterministic: true
+    force_col_wise: true
+
+# All paths are relative to the repository root (where this config file lives).
+# The pipeline resolves them via Config.resolve(), so there are no hidden
+# absolute paths baked into any stage code.
+paths:
+  raw_csv: "data/raw/E1-S1_SPY_OHLCV_auto_adjusted.csv"
+  raw_provenance: "data/raw/E1-S1_SPY_OHLCV_auto_adjusted.provenance.json"
+  canonical_csv: "data/processed/E1-S6_canonical_modeling_dataset.csv"
+  manifest: "data/processed/E1-S6_dataset_manifest.json"
+  data_dictionary: "docs/E1-S6_data_dictionary.csv"
+  baseline_output_dir: "E2-S1_Baseline_Zero_Predictor/output"
+  lightgbm_output_dir: "E2-S2_Train_Minimal_LightGBM_Regressor/output"
+  validation_output_dir: "E2-S3_Leakage_Safe_Walk_Forward_Validation/output"
+  canonical_oos_table: "results/oos_predictions.csv"
+  canonical_oos_manifest: "results/oos_predictions_manifest.json"
+  pipeline_manifest: "pipeline_manifest.json"

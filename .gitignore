@@ -33,3 +33,16 @@ Desktop.ini
 # Agentic
 .codegraph/
 
+# Generated pipeline outputs (CSVs, JSONs) -- never commit test/run artifacts
+# Only test *scripts* under tests/ are tracked; their outputs are not.
+**/output/*.csv
+**/output/*.json
+data/processed/*.csv
+data/processed/*.json
+data/raw/*.csv
+data/raw/*.json
+docs/*.csv
+results/*.csv
+results/*.json
+pipeline_manifest.json
+

@@ -548,7 +548,9 @@ def test_published_artifacts_match_manifest_hashes(manifest):
 def test_manifest_points_at_files_that_exist(manifest):
     """Item 4: a manifest naming a missing file cannot support a rerun."""
     missing = []
-    for key in ("notebook", "canonical_path", "data_dictionary_path", "source_raw_path"):
+    # The notebook key is optional -- the pipeline replaces the notebook
+    # with deterministic Python, so the manifest may omit it.
+    for key in ("canonical_path", "data_dictionary_path", "source_raw_path"):
         name = Path(manifest[key]).name
         if not list(REPO_ROOT.rglob(name)):
             missing.append(f"{key}={manifest[key]!r}")
