@@ -218,6 +218,25 @@ def check_fold_params_unchanged_across_outputs() -> dict:
     return result
 
 
+def compute_verdict(fold_params_frozen: dict, first_fold_train_size_adequate: bool) -> tuple[str, list[str]]:
+    """PASS/BLOCKED derived from every check this script runs, including the
+    two "soft" checks (`check_fold_params_unchanged_across_outputs`,
+    `first_fold_train_size_adequate`) that report a problem in the JSON
+    rather than raising. The hard checks (chronological order, purge,
+    contiguous dates, traceability) don't need to be listed here -- if any
+    of them had failed, `run()` would already have raised before this point,
+    so reaching this call already proves they passed."""
+    failures = []
+    if not first_fold_train_size_adequate:
+        failures.append("first_fold_train_size_adequate")
+    for name, result in fold_params_frozen.items():
+        if name == "current_split_params":
+            continue
+        if isinstance(result, str) and result.startswith("MISMATCH"):
+            failures.append(f"fold_params_frozen:{name}")
+    return ("PASS" if not failures else "BLOCKED"), failures
+
+
 def run() -> None:
     df = pd.read_csv(CANONICAL_PATH, parse_dates=["Date"])
     if not df["Date"].is_monotonic_increasing:
@@ -254,6 +273,8 @@ def run() -> None:
 
     fold_params_frozen = check_fold_params_unchanged_across_outputs()
     first_fold_train_size = len(folds[0].train_idx)
+    first_fold_train_size_adequate = first_fold_train_size >= MIN_ADEQUATE_FIRST_FOLD_TRAIN_SIZE
+    verdict, verdict_failures = compute_verdict(fold_params_frozen, first_fold_train_size_adequate)
 
     OUTPUT_DIR.mkdir(exist_ok=True)
     boundary_df.to_csv(OUTPUT_DIR / "fold_boundary_audit.csv", index=False)
@@ -261,7 +282,8 @@ def run() -> None:
     summary = {
         "card": "E2-S3 [P0][Model] Implement Leakage-Safe Walk-Forward Validation",
         "generated_at_utc": datetime.now(timezone.utc).isoformat(),
-        "verdict": "PASS",
+        "verdict": verdict,
+        "verdict_failures": verdict_failures,
         "canonical_dataset_path": str(CANONICAL_PATH.relative_to(REPO_ROOT)).replace("\\", "/"),
         "canonical_dataset_sha256": sha256_of(CANONICAL_PATH),
         "split_params": {
@@ -279,7 +301,7 @@ def run() -> None:
         "fold_params_frozen_across_E2_S1_and_E2_S2_outputs": fold_params_frozen,
         "first_fold_train_size": first_fold_train_size,
         "min_adequate_first_fold_train_size": MIN_ADEQUATE_FIRST_FOLD_TRAIN_SIZE,
-        "first_fold_train_size_adequate": first_fold_train_size >= MIN_ADEQUATE_FIRST_FOLD_TRAIN_SIZE,
+        "first_fold_train_size_adequate": first_fold_train_size_adequate,
         "package_versions": {
             "numpy": np.__version__,
             "pandas": pd.__version__,
@@ -290,8 +312,8 @@ def run() -> None:
         json.dumps(summary, indent=2, default=str), encoding="utf-8"
     )
 
-    print(f"Validated {len(folds)} folds; wrote fold boundary audit to {OUTPUT_DIR}")
-    print(json.dumps({"checks": summary["checks"], "traceability": traceability, "fold_params_frozen": fold_params_frozen}, indent=2, default=str))
+    print(f"Validated {len(folds)} folds; verdict={verdict}; wrote fold boundary audit to {OUTPUT_DIR}")
+    print(json.dumps({"checks": summary["checks"], "traceability": traceability, "fold_params_frozen": fold_params_frozen, "verdict_failures": verdict_failures}, indent=2, default=str))
 
 
 if __name__ == "__main__":

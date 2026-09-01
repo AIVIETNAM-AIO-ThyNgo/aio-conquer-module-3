@@ -22,6 +22,7 @@ sys.path.insert(0, str(E2_S4_DIR))
 sys.path.insert(0, str(REPO_ROOT / "E2-S1_Baseline_Zero_Predictor"))
 sys.path.insert(0, str(REPO_ROOT / "E2-S3_Leakage_Safe_Walk_Forward_Validation"))
 
+import generate_oos_predictions  # noqa: E402
 from generate_oos_predictions import (  # noqa: E402
     CANONICAL_PATH,
     OUTPUT_COLUMNS,
@@ -29,6 +30,7 @@ from generate_oos_predictions import (  # noqa: E402
     RESULTS_DIR,
     SOURCE_COLUMNS,
     SOURCE_PREDICTIONS_PATH,
+    SOURCE_SUMMARY_PATH,
     build_canonical_table,
     run,
     validate_every_row_is_genuine_oos,
@@ -159,6 +161,21 @@ def test_unexpected_extra_column_is_rejected(source_df):
 
 def test_source_columns_constant_matches_actual_E2_S2_output(source_df):
     assert list(source_df.columns) == SOURCE_COLUMNS
+
+
+# --------------------------------------------------------------------------
+# Edge case: lightgbm_summary.json recorded against a stale/different dataset
+# --------------------------------------------------------------------------
+
+def test_run_raises_if_source_summary_was_generated_from_a_different_dataset(tmp_path, monkeypatch):
+    stale_summary = json.loads(SOURCE_SUMMARY_PATH.read_text())
+    stale_summary["canonical_dataset_sha256"] = "0" * 64
+    stale_path = tmp_path / "lightgbm_summary.json"
+    stale_path.write_text(json.dumps(stale_summary))
+
+    monkeypatch.setattr(generate_oos_predictions, "SOURCE_SUMMARY_PATH", stale_path)
+    with pytest.raises(ValueError, match="different canonical dataset"):
+        run()
 
 
 # --------------------------------------------------------------------------

@@ -49,6 +49,7 @@ from validate_walk_forward import assert_predictions_trace_to_fold  # noqa: E402
 
 CANONICAL_PATH = REPO_ROOT / "data" / "processed" / "E1-S6_canonical_modeling_dataset.csv"
 SOURCE_PREDICTIONS_PATH = E2_S2_DIR / "output" / "lightgbm_oos_predictions.csv"
+SOURCE_SUMMARY_PATH = E2_S2_DIR / "output" / "lightgbm_summary.json"
 RESULTS_DIR = REPO_ROOT / "results"
 OUTPUT_PATH = RESULTS_DIR / "oos_predictions.csv"
 
@@ -121,13 +122,23 @@ def build_canonical_table(source_df: pd.DataFrame) -> pd.DataFrame:
 
 
 def run() -> None:
-    if not SOURCE_PREDICTIONS_PATH.exists():
+    if not SOURCE_PREDICTIONS_PATH.exists() or not SOURCE_SUMMARY_PATH.exists():
         raise FileNotFoundError(
             f"{SOURCE_PREDICTIONS_PATH} not found -- run E2-S2's train_lightgbm.py first"
         )
+    source_summary = json.loads(SOURCE_SUMMARY_PATH.read_text())
 
     canonical_df = pd.read_csv(CANONICAL_PATH, parse_dates=["Date"])
     dates = canonical_df["Date"]
+
+    canonical_sha256 = sha256_of(CANONICAL_PATH)
+    if source_summary["canonical_dataset_sha256"] != canonical_sha256:
+        raise ValueError(
+            "lightgbm_summary.json was generated from a different canonical dataset "
+            f"(sha256 {source_summary['canonical_dataset_sha256']}) than the one just loaded "
+            f"(sha256 {canonical_sha256}) -- rerun E2-S2's train_lightgbm.py against the current "
+            "dataset before publishing the canonical OOS table"
+        )
 
     source_df = pd.read_csv(SOURCE_PREDICTIONS_PATH, parse_dates=["Date"])
     validate_source_columns(source_df)

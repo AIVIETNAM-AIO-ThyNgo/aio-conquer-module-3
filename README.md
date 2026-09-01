@@ -2,7 +2,10 @@
 
 Research question: does a LightGBM signal for SPY five-trading-day forward returns retain different genuine out-of-sample predictive performance in Low-Vol versus High-Vol regimes?
 
-This branch implements the Trello Data Foundation cards through E1-S6:
+This branch implements the Trello Data Foundation cards through E1-S6, the
+E4-S1 leakage/QA gate, and the E2 modeling cards through E2-S5 (baseline,
+LightGBM, walk-forward validation, canonical OOS table, regime-conditioned
+evaluation):
 
 - [E1-S1 — Acquire & Version Raw SPY OHLCV](https://trello.com/c/XZnNG075)
 - [E1-S2 — Validate Raw Market Data](https://trello.com/c/ylsf1Ag0)
@@ -10,6 +13,15 @@ This branch implements the Trello Data Foundation cards through E1-S6:
 - [E1-S4 — Build Historical Feature Set](https://trello.com/c/1nBr3JrS)
 - [E1-S5 — Construct Leakage-Safe Low/High Volatility Regime](https://trello.com/c/G8hsrnJR)
 - [E1-S6 — Publish Canonical Modeling Dataset & Data Dictionary](https://trello.com/c/4wwdJQnv)
+- E4-S1 — Pre-Model Leakage & Data Quality Gate (`docs/E4-S1_leakage_audit_record.md`)
+- E2-S1 — Baseline Zero Predictor (`E2-S1_Baseline_Zero_Predictor/`)
+- E2-S2 — Train Minimal LightGBM Regressor (`E2-S2_Train_Minimal_LightGBM_Regressor/`)
+- E2-S3 — Leakage-Safe Walk-Forward Validation (`E2-S3_Leakage_Safe_Walk_Forward_Validation/`)
+- E2-S4 — Generate Canonical OOS Prediction Table (`E2-S4_Generate_Canonical_OOS_Prediction_Table/`)
+- E2-S5 — Evaluate Overall/LowVol/HighVol Performance (`E2-S5_Evaluate_Overall_LowVol_HighVol_Performance/`)
+
+`E2-S6_Multi_Model_Comparison/` is a follow-up, not a board card: it compares
+LightGBM against Random Forest, AdaBoost and XGBoost on the same folds.
 
 ## Primary artifacts
 
@@ -50,4 +62,8 @@ The committed raw artifact is reused on rerun, so Yahoo history cannot be silent
 
 ## Scope boundary
 
-This work establishes the E1 modeling dataset only. LightGBM training, purged walk-forward splits, canonical OOS predictions, and regime-conditioned evaluation belong to E2.
+E1 establishes the canonical modeling dataset only (features, target, regime
+label) -- no model is trained in E1. LightGBM training, purged walk-forward
+splits, canonical OOS predictions and regime-conditioned evaluation are
+implemented in the `E2-S*` folders at the repository root, each with its own
+README documenting deliverable, acceptance criteria and edge cases.
