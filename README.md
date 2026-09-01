@@ -2,58 +2,26 @@
 
 Research question: does a LightGBM signal for SPY five-trading-day forward returns retain different genuine out-of-sample predictive performance in Low-Vol versus High-Vol regimes?
 
-## Unified Pipeline (E3-S2)
+This branch implements the Trello Data Foundation cards through E1-S6, the
+E4-S1 leakage/QA gate, and the E2 modeling cards through E2-S5 (baseline,
+LightGBM, walk-forward validation, canonical OOS table, regime-conditioned
+evaluation):
 
-The entire execution path from raw SPY data to processed dataset, walk-forward training, OOS predictions, and evaluation outputs is now a single documented, deterministic pipeline:
+- [E1-S1 — Acquire & Version Raw SPY OHLCV](https://trello.com/c/XZnNG075)
+- [E1-S2 — Validate Raw Market Data](https://trello.com/c/ylsf1Ag0)
+- [E1-S3 — Build Returns & 5-Trading-Day Forward Target](https://trello.com/c/dRR58WDg)
+- [E1-S4 — Build Historical Feature Set](https://trello.com/c/1nBr3JrS)
+- [E1-S5 — Construct Leakage-Safe Low/High Volatility Regime](https://trello.com/c/G8hsrnJR)
+- [E1-S6 — Publish Canonical Modeling Dataset & Data Dictionary](https://trello.com/c/4wwdJQnv)
+- E4-S1 — Pre-Model Leakage & Data Quality Gate (`docs/E4-S1_leakage_audit_record.md`)
+- E2-S1 — Baseline Zero Predictor (`E2-S1_Baseline_Zero_Predictor/`)
+- E2-S2 — Train Minimal LightGBM Regressor (`E2-S2_Train_Minimal_LightGBM_Regressor/`)
+- E2-S3 — Leakage-Safe Walk-Forward Validation (`E2-S3_Leakage_Safe_Walk_Forward_Validation/`)
+- E2-S4 — Generate Canonical OOS Prediction Table (`E2-S4_Generate_Canonical_OOS_Prediction_Table/`)
+- E2-S5 — Evaluate Overall/LowVol/HighVol Performance (`E2-S5_Evaluate_Overall_LowVol_HighVol_Performance/`)
 
-```
-python -m E3-S2_Data_Model_Integration_Flow.pipeline.run_pipeline          # single entry point
-```
-
-It runs five stages in order:
-
-| Stage | Module | Outputs |
-|---|---|---|
-| 1. data_foundation | `pipeline/data_foundation.py` | raw CSV, provenance, canonical CSV, manifest, data dictionary |
-| 2. baseline | `pipeline/model.py` | baseline_zero_oos_predictions.csv, fold_metrics, summary |
-| 3. lightgbm | `pipeline/model.py` | lightgbm_oos_predictions.csv, fold_metrics, summary |
-| 4. validation | `pipeline/model.py` | fold_boundary_audit.csv, walk_forward_validation_summary.json |
-| 5. canonical_oos | `pipeline/model.py` | results/oos_predictions.csv + manifest |
-
-### Single source of truth
-
-All configuration lives in `E3-S2_Data_Model_Integration_Flow/pipeline_config.yaml`. Every parameter the pipeline needs — data acquisition, feature engineering, regime construction, walk-forward splitting, model training, and output paths — is declared there. No stage contains hardcoded constants; each receives what it needs from the Config object.
-
-### Hash chaining & staleness detection
-
-Every stage records a `StageContract` (`pipeline/contract.py`) that captures:
-- the hash of `pipeline_config.yaml`,
-- the hashes of every input artifact consumed,
-- the hashes of every output artifact produced,
-- the timestamp of the run.
-
-On the next run, the pipeline compares the contract the new run *would* produce against the recorded one. If inputs changed but outputs weren't regenerated, `StaleOutputError` is raised — so a stale downstream output can never be mistaken for a current one.
-
-This catches every edge case named on the card:
-- **Partial rerun mixing old/new artifacts**: input hash mismatch vs recorded output hash → StaleOutputError.
-- **Hidden local paths**: every path is resolved from `Config.resolve()` and recorded as an absolute path in the contract; a path that drifts between machines is visible.
-- **Config mismatch between data/model modules**: every stage records `config_hash`; a stage whose recorded config_hash differs from the current one is stale.
-- **API failure leaving old raw file silently reused**: the raw file's hash is recorded; a download failure that leaves the old file in place produces a different hash than a successful refresh would, and the downstream canonical dataset is flagged as stale.
-
-### Reproduce
-
-```bash
-python -m E3-S2_Data_Model_Integration_Flow.pipeline.run_pipeline            # run all stages
-python -m E3-S2_Data_Model_Integration_Flow.pipeline.run_pipeline baseline   # run a single stage
-python -m E3-S2_Data_Model_Integration_Flow.pipeline.run_pipeline --force    # regenerate all outputs
-
-python -m pytest E3-S2_Data_Model_Integration_Flow/pipeline/tests/test_pipeline.py -v
-python -m pytest tests/test_E1_S6_canonical_dataset.py -v
-python -m pytest E2-S1_Baseline_Zero_Predictor/tests/test_baseline_zero.py -v
-python -m pytest E2-S2_Train_Minimal_LightGBM_Regressor/tests/test_train_lightgbm.py -v
-python -m pytest E2-S3_Leakage_Safe_Walk_Forward_Validation/tests/test_walk_forward_validation.py -v
-python -m pytest E2-S4_Generate_Canonical_OOS_Prediction_Table/tests/test_generate_oos_predictions.py -v
-```
+`E2-S6_Multi_Model_Comparison/` is a follow-up, not a board card: it compares
+LightGBM against Random Forest, AdaBoost and XGBoost on the same folds.
 
 ## Primary artifacts
 
@@ -125,3 +93,8 @@ Every feature uses information available at or before prediction date `t`. The t
 ## Scope boundary
 
 This work establishes the full E1→E2 pipeline from raw data to OOS predictions. Regime-conditioned evaluation and reporting belong to later stories, which should read `results/oos_predictions.csv` rather than either model's raw `output/*_oos_predictions.csv`.
+E1 establishes the canonical modeling dataset only (features, target, regime
+label) -- no model is trained in E1. LightGBM training, purged walk-forward
+splits, canonical OOS predictions and regime-conditioned evaluation are
+implemented in the `E2-S*` folders at the repository root, each with its own
+README documenting deliverable, acceptance criteria and edge cases.

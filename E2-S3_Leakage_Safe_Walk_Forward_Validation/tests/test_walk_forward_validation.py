@@ -30,6 +30,7 @@ from validate_walk_forward import (  # noqa: E402
     assert_predictions_trace_to_fold,
     assert_purge_removes_label_overlap,
     check_fold_params_unchanged_across_outputs,
+    compute_verdict,
     fit_scaler_on_train_fold_only,
     fold_boundary_row,
     run,
@@ -217,6 +218,34 @@ def test_fold_params_are_frozen_across_E2_S1_and_E2_S2_recorded_outputs():
         )
 
 
+def test_compute_verdict_passes_when_every_soft_check_is_clean():
+    fold_params_frozen = {"current_split_params": {}, "baseline_zero": "MATCH", "lightgbm": "SKIPPED -- output not found"}
+    verdict, failures = compute_verdict(fold_params_frozen, first_fold_train_size_adequate=True)
+    assert verdict == "PASS"
+    assert failures == []
+
+
+def test_compute_verdict_blocks_on_a_fold_params_mismatch():
+    """This is exactly the scenario the verdict is supposed to catch: fold
+    logic changed after E2-S1/E2-S2 already recorded OOS results under the
+    old values. Before this fix, `verdict` stayed hardcoded "PASS" even here."""
+    fold_params_frozen = {
+        "current_split_params": {},
+        "baseline_zero": "MISMATCH: recorded={'n_folds': 5}",
+        "lightgbm": "MATCH",
+    }
+    verdict, failures = compute_verdict(fold_params_frozen, first_fold_train_size_adequate=True)
+    assert verdict == "BLOCKED"
+    assert failures == ["fold_params_frozen:baseline_zero"]
+
+
+def test_compute_verdict_blocks_on_an_inadequate_first_fold():
+    fold_params_frozen = {"current_split_params": {}, "baseline_zero": "MATCH", "lightgbm": "MATCH"}
+    verdict, failures = compute_verdict(fold_params_frozen, first_fold_train_size_adequate=False)
+    assert verdict == "BLOCKED"
+    assert failures == ["first_fold_train_size_adequate"]
+
+
 # --------------------------------------------------------------------------
 # Acceptance: fold boundaries + fold_id saved, every OOS prediction traceable
 # --------------------------------------------------------------------------
@@ -260,5 +289,6 @@ def test_run_produces_fold_boundary_audit_and_summary():
     assert (boundary_df["purge_gap_n_rows"] == HORIZON_TRADING_DAYS).all()
 
     assert summary["verdict"] == "PASS"
+    assert summary["verdict_failures"] == []
     assert all(summary["checks"].values())
     assert summary["first_fold_train_size_adequate"] is True
