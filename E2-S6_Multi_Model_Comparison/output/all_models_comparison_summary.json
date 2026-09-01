@@ -1,0 +1,26 @@
+{
+  "card": "E2-S6 [Model] Compare Baseline / LightGBM / RandomForest / AdaBoost / XGBoost (follow-up, not a board card)",
+  "generated_at_utc": "2026-09-01T05:10:23.830888+00:00",
+  "models": [
+    "baseline_zero",
+    "lightgbm",
+    "random_forest",
+    "adaboost",
+    "xgboost"
+  ],
+  "scopes": [
+    "Overall",
+    "LowVol",
+    "HighVol"
+  ],
+  "no_cherry_picking_declaration": "This table reports N, MAE, prediction_correlation and directional_hit_rate for every (model, scope) pair unconditionally -- all 5 models across Overall/LowVol/HighVol -- regardless of which numbers look favorable for any one model.",
+  "best_model_by_overall_mae": "random_forest",
+  "best_model_by_overall_prediction_correlation": "random_forest",
+  "best_model_by_overall_directional_hit_rate": "random_forest",
+  "is_lightgbm_best_declaration": "By OOS MAE (Overall), the lowest-error model is 'random_forest'. By prediction correlation, the highest is 'random_forest'. By directional hit rate, the highest is 'random_forest'. These need not agree, and are reported separately rather than collapsed into a single 'winner' -- see README for the honest reading.",
+  "package_versions": {
+    "numpy": "2.5.2",
+    "pandas": "3.0.5"
+  },
+  "python": "3.13.5"
+}
