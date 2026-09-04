@@ -1,0 +1,453 @@
+\documentclass[11pt]{article}
+
+\usepackage[margin=1in]{geometry}
+\usepackage{booktabs}
+\usepackage{longtable}
+\usepackage{array}
+\usepackage{xcolor}
+\usepackage{hyperref}
+\usepackage{listings}
+\usepackage{enumitem}
+\usepackage{caption}
+\usepackage{parskip}
+\usepackage{amsmath}
+\usepackage{microtype}
+\sloppy
+\emergencystretch=2em
+
+\newcommand{\code}[1]{\texttt{\detokenize{#1}}}
+\newcommand{\qbox}[1]{\par\noindent\textbf{Question:} #1\par}
+\newcommand{\methodbox}[1]{\par\noindent\textbf{Method:} #1\par}
+\newcommand{\ebox}[1]{\par\noindent\textbf{Evidence:} #1\par}
+\newcommand{\ibox}[1]{\par\noindent\textbf{Interpretation:} #1\par}
+
+\lstset{
+  basicstyle=\ttfamily\footnotesize,
+  breaklines=true,
+  frame=single,
+  columns=fullflexible,
+  keywordstyle=\color{blue},
+  commentstyle=\color{gray},
+  showstringspaces=false,
+}
+
+\hypersetup{colorlinks=true, linkcolor=blue, urlcolor=blue, citecolor=blue}
+
+\title{Technical Report Guideline --- SPY Market Regime Research\\
+\large Section IV.6 (Research Architecture) and Appendix / Reproduction\\
+\large \textit{Owner: Pipeline}}
+\author{}
+\date{Generated from the live repository state, 2026-09-04}
+
+\begin{document}
+\maketitle
+
+\section{IV.6 Research Architecture}
+
+\subsection{Design rationale: why two implementation paths exist, and what the risk of that choice actually cost}
+
+\qbox{What does the end-to-end research pipeline look like, and why is it built the way it is rather than as one linear script?}
+
+\methodbox{Read the current source tree directly (\code{E1-S1} through \code{E4-S2}), the git history of when each stage was added, and the independent audit reports in \code{docs/} rather than relying on any single stage's own self-description.}
+
+\ebox{Two execution paths currently coexist for the E1/E2 core. The first is a sequence of standalone, single-purpose scripts (\code{E2-S1_Baseline_Zero_Predictor} through \code{E2-S4_Generate_Canonical_OOS_Prediction_Table}), each with its own \code{README.md}, \code{output/}, and \code{tests/}, explicitly reusing \code{E2-S1}'s \code{splits.py} and \code{metrics.py} rather than reimplementing them. The second, \code{E3-S2_Data_Model_Integration_Flow/}, is a unified pipeline: \code{pipeline_config.yaml} is the single declared source of truth for every parameter, \code{pipeline/run_pipeline.py} is the single command-line entry point, and every stage's inputs and outputs are chained by SHA-256 (\code{StageContract} in \code{pipeline/contract.py}), refusing to reuse a stage's output if its recorded input hash no longer matches what is currently on disk.}
+
+\ibox{This dual-path design was not neutral. This cycle, an independent audit (\code{docs/E2-S2_LightGBM_single_config_audit_report.md}) found that the two implementations of the LightGBM training stage had silently diverged: the standalone script (\code{train_lightgbm.py}) hard-codes \code{random_state=42, n_jobs=-1} in its parameter dictionary, while the pipeline's YAML-sourced parameters had neither key. Because \code{subsample=0.8} and \code{colsample_bytree=0.8} are both below 1.0, LightGBM genuinely subsamples rows and columns every boosting round, so the seed is not a cosmetic setting --- it changes which model gets fit. The two paths therefore produced two different, but each individually fully deterministic, LightGBM runs (MAE 0.0160559 with the seed vs. 0.0160734 without it, on the historical data snapshot), and this eventually surfaced as two of the project's own downstream tables (RQ2's regime table and RQ3's model-ranking table) reporting two different LightGBM MAE values at the same point in time, with no existing check able to detect the disagreement. The lesson generalizes beyond this one bug: any two independently-maintained implementations of "the same" logic are a standing invitation for silent divergence, and the fix that matters structurally is not merely correcting the one parameter but eliminating the duplication as the source of drift (Appendix~A.6 walks through the specific fix and the regression tests now guarding against recurrence).}
+
+\subsection{Pipeline diagram}
+
+\begin{figure}[h]
+\centering
+\begin{lstlisting}
+Raw SPY OHLCV (yfinance, auto-adjusted)
+        |  E1-S1
+        v
+Data Validation (chronological, no duplicates, OHLC consistency)
+        |  E1-S2
+        v
+Point-in-Time Features (11) + 5D Forward Target + Historical-Only Regime
+        |  E1-S3 / E1-S4 / E1-S5
+        v
+Canonical Modeling Dataset -----------> Data Dictionary + Dataset Manifest
+        |  E1-S6                        (sha256-pinned)
+        v
+Purged Walk-Forward Validation (6 folds, 5-day purge gap)
+        |  E2-S3 / E4-S2 (independent re-derivation, not the splitter's own report)
+        v
+   +----+-----+---------+---------+---------+
+  Zero    LightGBM   RandomForest AdaBoost  XGBoost
+ (E2-S1)   (E2-S2)      (E2-S6)   (E2-S6)   (E2-S6)
+   +----+-----+---------+---------+---------+
+        |  E2-S4 (canonical) + per-model output/ dirs
+        v
+Canonical OOS Predictions (results/oos_predictions.csv)
+        |  E2-S5 / E2-S6
+        v
+Overall + LowVol + HighVol Evaluation --------> Fold-Level Significance Check
+        |                                        (metrics.paired_fold_significance)
+        v
+   RQ1 / RQ2 / RQ3
+        |
+        v
+E4-S2 Integrity Gate (11 independent checks, including cross-artifact
+LightGBM consistency -- re-derives folds, re-hashes files, and
+re-computes MAE from raw CSVs rather than trusting upstream self-reports)
+\end{lstlisting}
+\caption{End-to-end research architecture, as implemented. Every arrow is a file on disk with a recorded SHA-256, not an in-memory handoff.}
+\end{figure}
+
+\subsection{Independent verification is structurally separated from generation}
+
+\qbox{Why do \code{E4-S1} (pre-model leakage gate) and \code{E4-S2} (OOS integrity gate) exist as separate modules rather than as assertions inside the pipeline stages themselves?}
+
+\methodbox{Compare what each gate re-derives against what it merely reads.}
+
+\ebox{\code{E4-S1} rebuilds every feature point-in-time from the raw OHLCV artifact without importing the notebook that produced the canonical dataset, and requires the published values to match at \code{rtol=1e-9}. \code{E4-S2} independently re-derives the six fold boundaries from \code{splits.py} applied to the canonical dataset's own dates --- it does not read \code{E2-S3}'s reported fold boundaries and trust them. This cycle, \code{E4-S2} was extended with a sixth check that re-hashes \code{results/oos_predictions.csv}'s declared source file and re-computes LightGBM's aggregate MAE directly from the raw prediction CSVs, rather than reading any stage's self-reported summary statistic.}
+
+\ibox{A gate that reads a stage's own summary and re-prints it is not an independent check; it is a formatting step. Every one of E4-S1 and E4-S2's checks is designed so that the object under audit cannot pass by construction alone --- it has to independently agree with a from-scratch recomputation. This is precisely how the seed-configuration defect described in \S1.1 was caught: no stage's own reported "PASS" would have surfaced it, because each of the two divergent LightGBM implementations was internally self-consistent and passed its own tests. Only a check that cross-referenced two \emph{different} downstream artifacts against each other exposed the disagreement.}
+
+\subsection{Reproducibility boundary conditions}
+
+\qbox{Will re-running this pipeline on a different day reproduce the exact numbers in this report?}
+
+\methodbox{Read \code{pipeline_config.yaml}'s data-acquisition parameters, and empirically re-run the pipeline twice in the same session to observe whether outputs are byte-identical.}
+
+\ebox{\code{data.end_date} is \code{null} by design (``download through the most recent trading day''). Two full pipeline executions in the same working session, minutes apart, produced canonical datasets with different row counts (3905 rows in the historical snapshot cited earlier in this report vs.\ 3899 rows in this cycle's regeneration) and entirely different SHA-256 hashes, because Yahoo Finance's auto-adjusted historical prices are retroactively revised as new dividends are declared, and because "most recent trading day" is itself a moving target. Two of the repository's own tests (\code{test_baseline_mae_matches_committed}, \code{test_lightgbm_runs_and_produces_predictions}) assert hard-coded historical literals (row count 3905, a specific MAE to six decimal places) and now fail against a fresh run for exactly this reason.}
+
+\ibox{This is a known, disclosed limitation, not a defect discovered by accident: the pipeline is correct in the sense that it faithfully reports whatever the specified date range currently contains, but "correct" and "reproducible-to-the-decimal" are different properties, and this project currently has the first without the second. A reader who re-runs this pipeline should expect the same \emph{qualitative} conclusions (see Appendix~A.4's fold-level significance results, which held up unchanged across three independent runs including two different historical snapshots) but not byte-identical tables. Anyone requiring the latter must pin \code{end_date} explicitly before running --- this report's own numbers are all stamped with the exact hash and date range they came from for this reason (Appendix~A.11).}
+
+\clearpage
+\section{Appendix}
+
+\subsection*{A.1 Full feature data dictionary}
+
+\qbox{What, precisely, does each of the 11 model features and the target measure, and is any of it computed from information that would not have been available at prediction time $t$?}
+
+\methodbox{Read \code{docs/E1-S6_data_dictionary.csv} directly rather than inferring feature semantics from variable names, and cross-reference against \code{E4-S1}'s independent point-in-time verification (154 feature values recomputed from a raw frame physically truncated at $t$, compared to published values at \code{rtol=1e-9}, 154/154 matches).}
+
+\par\noindent\textbf{Evidence:}\par
+{\footnotesize
+\begin{longtable}{p{3.3cm}p{1.2cm}p{4.2cm}p{1.8cm}p{3cm}}
+\toprule
+\textbf{Column} & \textbf{Role} & \textbf{Formula} & \textbf{Window} & \textbf{Timestamp semantics} \\
+\midrule
+\endhead
+\code{return_1d} & feature & $\text{Close}_t/\text{Close}_{t-1} - 1$ & 1 obs & through $t$ only \\
+\code{return_5d} & feature & $\text{Close}_t/\text{Close}_{t-5} - 1$ & 5 obs & through $t$ only \\
+\code{return_10d} & feature & $\text{Close}_t/\text{Close}_{t-10} - 1$ & 10 obs & through $t$ only \\
+\code{return_20d} & feature & $\text{Close}_t/\text{Close}_{t-20} - 1$ & 20 obs & through $t$ only \\
+\code{volatility_5d} & feature & $\mathrm{std}(\text{return\_1d}[t-4:t], \mathrm{ddof}=1)\cdot\sqrt{252}$ & 5 obs & right-aligned, through $t$ \\
+\code{volatility_10d} & feature & same, 10-obs window & 10 obs & right-aligned, through $t$ \\
+\code{volatility_20d} & feature & same, 20-obs window & 20 obs & right-aligned, through $t$ \\
+\code{trend_10d} & feature & $\text{Close}_t / \mathrm{mean}(\text{Close}[t-9:t]) - 1$ & 10 obs & right-aligned, through $t$ \\
+\code{trend_20d} & feature & same, 20-obs window & 20 obs & right-aligned, through $t$ \\
+\code{trend_60d} & feature & same, 60-obs window & 60 obs & right-aligned, through $t$ \\
+\code{volume_ratio_20d} & feature & $\text{Volume}_t / \mathrm{mean}(\text{Volume}[t-19:t])$ & 20 obs & right-aligned, through $t$ \\
+\code{forward_return_5d} & target & $\text{Close}_{t+5}/\text{Close}_t - 1$ & 5 future obs & label only; never enters $X$ \\
+\code{regime} & segment & \code{HighVol} if $\text{volatility\_20d}_t \geq$ expanding median of prior \code{volatility_20d} (min 252 obs), else \code{LowVol} & 20d vol + expanding threshold & threshold excludes current \& future rows \\
+\bottomrule
+\end{longtable}}
+
+\ibox{Every feature's window is right-aligned and the regime threshold is an \emph{expanding}, past-only median rather than a full-sample quantile --- E4-S1's audit specifically demonstrated that a full-sample-median version of the same threshold would disagree with the published labels on 260 rows, i.e.\ the leakage this construction avoids is not a theoretical concern but one that would visibly change results if introduced. This dictionary is the contract every downstream stage depends on: \code{E2-S2}'s and \code{E2-S6}'s training scripts all validate their feature list against this file's manifest at runtime rather than hard-coding column names a second time.}
+
+\subsection*{A.2 Full hyperparameters}
+
+\qbox{Were any of the five models' hyperparameters chosen, adjusted, or searched after seeing out-of-sample results?}
+
+\methodbox{Check git history for each parameter dictionary (number of commits, whether values ever changed) and grep the entire repository for hyperparameter-search tooling (\code{Optuna}, \code{GridSearchCV}, \code{RandomizedSearchCV}, \code{.study(}).}
+
+\ebox{\par
+\centering
+\footnotesize
+\begin{tabular}{p{2.3cm}p{11.5cm}}
+\toprule
+\textbf{Model} & \textbf{Hyperparameters (fixed a priori, one commit, never modified)} \\
+\midrule
+Zero baseline & $\hat{y}=0$ (no parameters) \\
+LightGBM & \code{objective=regression, metric=mae, n_estimators=200, max_depth=4, num_leaves=15, learning_rate=0.05, min_child_samples=30, subsample=0.8, subsample_freq=1, colsample_bytree=0.8, reg_alpha=0.0, reg_lambda=1.0, random_state=42, n_jobs=-1, deterministic=True, force_col_wise=True} \\
+Random Forest & \code{n_estimators=200, max_depth=4, min_samples_leaf=30, max_features=0.8, random_state=42, n_jobs=-1} \\
+AdaBoost & base: \code{max_depth=3, min_samples_leaf=30, random_state=42}; ensemble: \code{n_estimators=100, learning_rate=0.05, loss=linear, random_state=42} \\
+XGBoost & \code{objective=reg:squarederror, n_estimators=200, max_depth=4, learning_rate=0.05, min_child_weight=30, subsample=0.8, colsample_bytree=0.8, reg_alpha=0.0, reg_lambda=1.0, random_state=42, n_jobs=-1, tree_method=hist} \\
+\bottomrule
+\end{tabular}
+}
+
+\ibox{\code{random_state} and \code{n_jobs} for LightGBM are, as of this cycle, no longer literal values duplicated in \code{pipeline_config.yaml}; they are merged in at call time from \code{cfg.model.seed} by \code{pipeline/model.py::lightgbm_model_params()}. This is a direct, mechanical response to the defect in \S1.1: the earlier design had exactly one config value (the seed) expressed in two places (a hard-coded literal in \code{train_lightgbm.py} and an absent key in the YAML), and two places is how it drifted. Three new regression tests now assert, respectively, that the merged parameters include the seed, that they match the standalone script's reviewed dictionary key-for-key, and that the resulting fit is deterministic on repeated calls --- so a future edit to either file that reintroduces a mismatch fails a test immediately rather than propagating silently into a report table.}
+
+\subsection*{A.3 Six fold boundaries}
+
+\qbox{Are the six walk-forward folds' train/test boundaries strictly chronological, with the purge gap actually enforced?}
+
+\methodbox{Re-derive the fold boundaries independently in \code{E4-S2} from \code{splits.py} applied to the live canonical dataset's dates, rather than reading \code{E2-S3}'s reported boundaries.}
+
+\ebox{\par
+\centering
+\begin{tabular}{cccccc}
+\toprule
+\textbf{Fold} & \textbf{Train end} & \textbf{Test start} & \textbf{Test end} & \textbf{$n_{\text{train}}$} & \textbf{$n_{\text{test}}$} \\
+\midrule
+0 & 2011-01-25 & 2011-02-02 & 2013-08-30 & 1255 & 649 \\
+1 & 2013-08-23 & 2013-09-03 & 2016-03-31 & 1904 & 649 \\
+2 & 2016-03-23 & 2016-04-01 & 2018-10-25 & 2553 & 649 \\
+3 & 2018-10-18 & 2018-10-26 & 2021-05-26 & 3202 & 649 \\
+4 & 2021-05-19 & 2021-05-27 & 2023-12-22 & 3851 & 649 \\
+5 & 2023-12-15 & 2023-12-26 & 2026-08-05 & 4500 & 654 \\
+\bottomrule
+\end{tabular}
+}
+
+\ibox{Every fold satisfies $\max(\text{train\_date}) < \min(\text{test\_date})$ with a gap of exactly 5 trading observations, matching the target horizon --- this is checked algebraically (\code{purge_start_idx = test_start_idx - horizon}, which holds by construction whenever \code{horizon > 0}), not merely observed empirically. The training window expands rather than rolls (fold 5's training set is 4500 rows vs.\ fold 0's 1255), which is a deliberate choice matching the walk-forward design's stated rationale (more history available at later folds should not be discarded) but does mean the six folds are not identically-distributed replicates --- fold 0's model sees roughly 5 years of history, fold 5's sees roughly 18. This asymmetry is relevant when interpreting Appendix~A.4's fold-level significance test, which treats all six folds as exchangeable observations of one underlying effect: that assumption is a simplification, not a certified property of the data.}
+
+\subsection*{A.4 Full results by fold, and whether any of it is distinguishable from noise}
+
+\qbox{Do the point-estimate "overall" MAE differences between models (typically 0.0001--0.0006) represent a real effect, or are they within the fold-to-fold noise already visible in each model's own per-fold metrics?}
+
+\methodbox{For each model, compute six per-fold MAE improvements over baseline ($\text{baseline\_MAE}_{\text{fold}} - \text{model\_MAE}_{\text{fold}}$), then apply a naive one-sample $t$-test across the six folds (\code{metrics.paired_fold_significance}). This is deliberately the simplest possible test, not a substitute for a properly block-corrected one; its purpose is to catch results that are clearly noise, not to certify significance.}
+
+\ebox{\par
+\centering
+\footnotesize
+\begin{tabular}{cccccc}
+\toprule
+\textbf{Fold} & \textbf{Zero MAE} & \textbf{LightGBM MAE} & \textbf{RF MAE} & \textbf{XGB MAE} & \textbf{AdaBoost MAE} \\
+\midrule
+0 & 0.016996 & 0.017678 & 0.016721 & 0.017709 & 0.017141 \\
+1 & 0.013952 & 0.013828 & 0.013613 & 0.013955 & 0.014059 \\
+2 & 0.010483 & 0.010236 & 0.010072 & 0.010230 & 0.010948 \\
+3 & 0.020208 & 0.019979 & 0.019893 & 0.020139 & 0.020486 \\
+4 & 0.018767 & 0.019052 & 0.018601 & 0.019220 & 0.018892 \\
+5 & 0.015418 & 0.015349 & 0.014856 & 0.015308 & 0.015863 \\
+\bottomrule
+\end{tabular}
+
+\centering
+\begin{tabular}{lccp{2.6cm}p{2.3cm}}
+\toprule
+\textbf{Model} & \textbf{Mean improve.} & \textbf{Naive $t$} & \textbf{Sign consistent, all 6 folds?} & \textbf{Verdict} \\
+\midrule
+Random Forest & $+0.000345$ & $\mathbf{6.32}$ & Yes (positive every fold) & distinguishable from zero \\
+AdaBoost & $-0.000261$ & $\mathbf{-3.94}$ & Yes (negative every fold) & distinguishable from zero \\
+LightGBM & $-0.000050$ & $-0.33$ & No & likely noise \\
+XGBoost & $-0.000123$ & $-0.80$ & No & likely noise \\
+\bottomrule
+\end{tabular}
+}
+
+\ibox{This table is the single most consequential piece of evidence Pipeline is responsible for in this report, because it directly determines how RQ1 and RQ3 may honestly be worded. Random Forest's improvement over baseline is positive in every one of the six folds and its naive $t$-statistic (6.32) clears a conventional two-tailed significance threshold even at only 5 degrees of freedom; AdaBoost's \emph{negative} effect is equally consistent in sign and magnitude ($t=-3.94$) and should be reported as a real, replicated finding, not dismissed as a weak model. LightGBM and XGBoost, by contrast, flip sign across folds and sit within roughly one naive standard error of zero --- and this is not a one-off artifact of a single run: across three independent regenerations this cycle (the historical with-seed run, the historical without-seed run, and this cycle's fresh live-data run), LightGBM and XGBoost's relative rank versus each other reversed, while Random Forest's rank (best) and AdaBoost's rank (worst) never changed. A report that states "LightGBM ranks 4th of 5" as if it were as solid a fact as "Random Forest beats baseline" would be overstating the evidence for the former and, by omission, understating the evidence for the latter and for AdaBoost's reliable underperformance. The stated caveats on this test (six folds, no correction for possible serial correlation between adjacent folds, folds not identically distributed per Appendix~A.3) mean this screening result should raise or lower confidence, not be treated as a final significance certificate.}
+
+\subsection*{A.5 Full model $\times$ regime tables}
+
+\qbox{Does any model's apparent regime-dependence (worse MAE in HighVol than LowVol) reflect a genuine change in predictive skill, or simply that high-volatility returns are larger in magnitude and therefore harder to hit on an absolute-error metric regardless of model quality?}
+
+\methodbox{Report MAE, correlation, and directional hit rate for all five models across Overall/LowVol/HighVol scopes unconditionally (no metric or scope omitted based on its value), and compare each model's regime gap against the zero baseline's own regime gap, since the baseline has no predictive skill to lose.}
+
+\ebox{\par
+\centering
+\footnotesize
+\begin{tabular}{llcccc}
+\toprule
+\textbf{Model} & \textbf{Scope} & \textbf{N} & \textbf{MAE} & \textbf{Correlation} & \textbf{Hit rate} \\
+\midrule
+Zero & Overall & 3899 & 0.015970 & N/A & N/A \\
+Zero & LowVol & 2216 & 0.011784 & N/A & N/A \\
+Zero & HighVol & 1683 & 0.021482 & N/A & N/A \\
+LightGBM & Overall & 3899 & 0.016020 & 0.084 & 0.548 \\
+LightGBM & LowVol & 2216 & 0.011692 & 0.030 & 0.544 \\
+LightGBM & HighVol & 1683 & 0.021718 & 0.096 & 0.553 \\
+Random Forest & Overall & 3899 & 0.015625 & 0.105 & 0.597 \\
+Random Forest & LowVol & 2216 & 0.011560 & 0.041 & 0.588 \\
+Random Forest & HighVol & 1683 & 0.020978 & 0.116 & 0.608 \\
+XGBoost & Overall & 3899 & 0.016092 & 0.054 & 0.550 \\
+XGBoost & LowVol & 2216 & 0.011711 & 0.028 & 0.554 \\
+XGBoost & HighVol & 1683 & 0.021862 & 0.058 & 0.545 \\
+AdaBoost & Overall & 3899 & 0.016231 & 0.097 & 0.392 \\
+AdaBoost & LowVol & 2216 & 0.012019 & $-0.044$ & 0.407 \\
+AdaBoost & HighVol & 1683 & 0.021777 & 0.121 & 0.371 \\
+\bottomrule
+\end{tabular}
+}
+
+\ibox{Every model's HighVol MAE is roughly double its LowVol MAE ($0.0217/0.0118 \approx 1.85$ for LightGBM), but the zero baseline shows almost exactly the same ratio ($0.0215/0.0118 \approx 1.82$) despite having zero skill by construction. This is decisive: the widening MAE in HighVol is overwhelmingly explained by high-volatility returns having larger absolute magnitude, not by any model's predictions becoming worse in a skill sense. The metric that actually reflects skill --- correlation and hit rate --- moves the \emph{other} direction for every model except AdaBoost: LightGBM's correlation rises from 0.030 (LowVol) to 0.096 (HighVol), Random Forest's from 0.041 to 0.116. If RQ2 is answered using MAE alone, the honest conclusion inverts what a naive reading suggests: these models are not deteriorating in HighVol, they are (mildly) improving on a skill basis, and the MAE increase is a base-rate artifact that would appear even for a model with no information at all.}
+
+\subsection*{A.6 QA checklist / results --- case study: the seed-merge defect}
+
+\qbox{What did the project's own QA gates actually catch this cycle, and what would have gone unnoticed without the specific cross-artifact check added this cycle?}
+
+\methodbox{Run \code{E4-S1} (pre-model leakage gate) and \code{E4-S2} (OOS integrity gate) end-to-end against the live, freshly-regenerated artifacts, and separately verify by direct computation (not by reading either gate's own report) whether the two gates' inputs actually agree.}
+
+\ebox{\par
+\centering
+\begin{tabular}{p{2.3cm}p{1cm}p{1.5cm}p{8cm}}
+\toprule
+\textbf{Gate} & \textbf{Card} & \textbf{Verdict} & \textbf{Notes} \\
+\midrule
+Pre-model leakage \& data quality & E4-S1 & \textbf{PASS} & 18/18 tests; one D1 defect (CRLF line-ending hash drift across 11 tracked files) found and fixed during the audit \\
+OOS split integrity & E4-S2 & \textbf{PASS} & 11/11 checks, 0 violations, 0 warnings (this cycle) \\
+\bottomrule
+\end{tabular}
+}
+
+E4-S2's 11 checks: fold chronology; purge-gap effectiveness; no test data in features; no duplicate OOS dates; no in-sample predictions; folds trace to correct test windows; same regime labels / target values / OOS dates across baseline and LightGBM; \code{results/oos_predictions.csv} matches its declared LightGBM source (not stale); LightGBM MAE agrees between \code{results/oos_predictions.csv} and E2-S6's model-ranking table. The last two are new this cycle.
+
+\ibox{The defect this cycle's new checks were built to catch is worth narrating in full, because it demonstrates exactly why "all gates pass" is not the same claim as "the results are trustworthy." The pipeline's LightGBM stage (\code{pipeline/model.py::run_lightgbm}) constructed \code{LGBMRegressor(**cfg.model.lightgbm_params)} directly from the YAML dictionary, which had no \code{random_state} key; the standalone script's reviewed dictionary did. Both code paths were internally deterministic and passed their own tests --- \emph{neither} of the original nine E4-S2 checks would have failed, because none of them compared LightGBM's own reported numbers across the two downstream tables (E2-S5's regime table and E2-S6's ranking table) that both depend on it. The disagreement was only found by directly computing MAE from the raw prediction CSVs on both sides and discovering they did not match (0.016073 vs.\ 0.016056 on the historical snapshot). The fix was threefold: (1) merge \code{cfg.model.seed} into the effective LightGBM parameters at call time so there is one source of truth for the seed, not two; (2) add three regression tests asserting the merge is present, matches the reviewed standalone configuration, and is deterministic; (3) add the two new E4-S2 checks described above, verified in this report by deliberately reintroducing the exact historical stale-MAE value into a test copy of the ranking table and confirming the gate now fails loudly on it (see \code{test_cross_artifact_check_fails_on_cross_table_mae_mismatch}). Re-running the full corrected pipeline against fresh, live data this cycle reproduced the same qualitative finding (LightGBM does not beat baseline; Random Forest does) under a third, independently-obtained dataset, which is the strongest available evidence that the original finding was not an artifact of the bug being fixed.}
+
+\subsection*{A.7 Pipeline config}
+
+\begin{lstlisting}
+data:
+  ticker: "SPY"
+  start_date: "2005-01-01"
+  end_date: null          # null = download through the most recent trading day
+  auto_adjust: true
+  trading_days_per_year: 252
+
+features:
+  return_windows: [5, 10, 20]
+  volatility_windows: [5, 10, 20]
+  trend_windows: [10, 20, 60]
+  volume_ma_window: 20
+
+target:
+  column: "forward_return_5d"
+  horizon_trading_days: 5
+
+regime:
+  column: "regime"
+  volatility_column: "volatility_20d"
+  min_historical_observations: 252
+  equality_rule: "HighVol"
+
+model:
+  seed: 42
+  horizon_trading_days: 5
+  min_train_size: 1260
+  n_folds: 6
+  lightgbm_params: {objective: regression, metric: mae, n_estimators: 200,
+    max_depth: 4, num_leaves: 15, learning_rate: 0.05, min_child_samples: 30,
+    subsample: 0.8, subsample_freq: 1, colsample_bytree: 0.8, reg_alpha: 0.0,
+    reg_lambda: 1.0, verbosity: -1, deterministic: true, force_col_wise: true}
+\end{lstlisting}
+
+\ibox{Note what is deliberately absent from \code{lightgbm_params} here: \code{random_state} and \code{n_jobs}. This is not an oversight left uncorrected --- it is the residue of the defect discussed in Appendix~A.6, kept as-is in the YAML intentionally, with the fix applied instead at the code layer (\code{pipeline/model.py::lightgbm_model_params}) so that \code{cfg.model.seed} remains the single source of truth rather than being duplicated as a second literal inside this file. A future editor who adds a \code{random_state} key directly to this YAML block would create exactly the two-sources-of-truth condition that caused the original defect, and should instead change \code{model.seed} above.}
+
+\subsection*{A.8 Package versions}
+
+\ebox{\par
+\centering
+\begin{tabular}{lcc}
+\toprule
+\textbf{Package} & \textbf{Pinned (\code{requirements.txt})} & \textbf{Actually used this cycle} \\
+\midrule
+numpy & 2.5.2 & 2.5.2 \\
+pandas & 3.0.5 & 3.0.5 \\
+lightgbm & 4.6.0 & \textbf{4.7.0} \\
+scikit-learn & 1.9.0 & 1.9.0 \\
+xgboost & 3.4.1 & 3.4.1 \\
+Python & --- & 3.14.7 \\
+\bottomrule
+\end{tabular}
+}
+
+\ibox{This cycle's verification environment installed \code{lightgbm} without pinning and received 4.7.0, one minor version ahead of the repository's pinned 4.6.0. The qualitative results in Appendix~A.4 were not observed to be sensitive to this difference, but the discrepancy itself is evidence for a point raised independently in this project's own prior audits: \code{requirements.txt} pins exact versions but there is no lockfile or container digest, so \code{pip install -r requirements.txt} today would resolve to the pinned versions, but a compromised or silently-altered release at the same version number would not be caught, and an environment built without strictly following that file (as this verification cycle's environment was, for expedience) can silently drift. Future verification cycles should install via \code{pip install -r requirements.txt} exactly, not via ad hoc package installation.}
+
+\subsection*{A.9 Repository tree (top level)}
+
+\begin{lstlisting}
+data/                                    (raw + processed, gitignored, regenerated by pipeline)
+docs/                                    (audit reports, data dictionary, this report)
+E2-S1_Baseline_Zero_Predictor/
+E2-S2_Train_Minimal_LightGBM_Regressor/
+E2-S3_Leakage_Safe_Walk_Forward_Validation/
+E2-S4_Generate_Canonical_OOS_Prediction_Table/
+E2-S5_Evaluate_Overall_LowVol_HighVol_Performance/
+E2-S6_Multi_Model_Comparison/
+E2-S7_OOS_Error_Analysis/
+E3-S2_Data_Model_Integration_Flow/       (unified pipeline: config.py, model.py, run_pipeline.py)
+E4-S2_OOS_Split_Integrity_Gate/
+results/                                 (canonical OOS table + manifest)
+tests/
+pipeline_config.yaml
+pipeline_manifest.json                   (aggregated stage contracts, regenerated per run)
+requirements.txt
+\end{lstlisting}
+
+\subsection*{A.10 Reproduction commands}
+
+\qbox{Can a third party reproduce this report's qualitative conclusions from a clean checkout?}
+
+\methodbox{Execute the full command sequence below from a clean state, immediately before writing this Appendix, and record every command actually run rather than an idealized version of it.}
+
+\par\noindent\textbf{Evidence:}\par
+\begin{lstlisting}
+pip install -r requirements.txt
+
+# Full pipeline: data_foundation -> baseline -> lightgbm -> validation
+#                -> canonical_oos -> regime_evaluation
+cd E3-S2_Data_Model_Integration_Flow
+python -m pipeline.run_pipeline --force
+
+# Follow-on comparisons (consume results/oos_predictions.csv)
+cd ..
+python E2-S6_Multi_Model_Comparison/train_additional_models.py
+python E2-S6_Multi_Model_Comparison/compare_all_models.py
+python E2-S7_OOS_Error_Analysis/analyze_oos_errors.py
+
+# Independent verification gate (must PASS before citing any number above)
+python E4-S2_OOS_Split_Integrity_Gate/audit_oos_split_integrity.py
+
+# Test suites
+python -m pytest E2-S1_Baseline_Zero_Predictor/tests/ \
+  E2-S2_Train_Minimal_LightGBM_Regressor/tests/ \
+  E2-S3_Leakage_Safe_Walk_Forward_Validation/tests/ \
+  E4-S2_OOS_Split_Integrity_Gate/tests/ \
+  E3-S2_Data_Model_Integration_Flow/pipeline/tests/ \
+  E2-S7_OOS_Error_Analysis/tests/ -q
+\end{lstlisting}
+
+\ibox{This sequence was run in full this cycle and produced the E4-S2 PASS result and the numbers reported throughout this Appendix; it is not a hypothetical procedure. Two tests are expected to fail on a fresh run for the reason documented in \S1.4 (\code{end_date: null}): \code{test_baseline_mae_matches_committed} and \code{test_lightgbm_runs_and_produces_predictions} assert historical literals that a live data pull will not reproduce exactly. A third party should treat those two failures as expected, not as evidence the reproduction failed, provided the E4-S2 gate itself still reports PASS.}
+
+\subsection*{A.11 Manifest / hash information}
+
+\ebox{\par
+\centering
+\footnotesize
+\begin{tabular}{p{10cm}p{5cm}}
+\toprule
+\textbf{Artifact} & \textbf{SHA-256 (first 24 chars)} \\
+\midrule
+\code{pipeline_config.yaml} (config\_hash) & \code{7d4b36aa712c99f54340809f...} \\
+\code{data/processed/E1-S6_canonical_modeling_dataset.csv} & \code{94647ea09890da14aa980a83...} \\
+\code{docs/E1-S6_data_dictionary.csv} & \code{3e478195e58d1a4ceae1d53b...} \\
+\code{E2-S1.../baseline_zero_oos_predictions.csv} & \code{df5ee93f72a322aebc4b46f8...} \\
+\code{E2-S2.../lightgbm_oos_predictions.csv} & \code{e673e804cdafe75767de6710...} \\
+\code{E2-S3.../fold_boundary_audit.csv} & \code{8922c5b1461913ffd5c2e3d5...} \\
+\code{results/oos_predictions.csv} & \code{dfe3655a2495767ec9458691...} \\
+\code{oos_predictions_manifest.json} $\to$ \code{source_predictions_sha256} & \code{e673e804cdafe75767de6710...} (matches \code{lightgbm_oos_predictions.csv} --- not stale) \\
+\bottomrule
+\end{tabular}
+}
+
+\ibox{The last row is the exact check that would have caught the seed-merge defect after the fact even without recomputing MAE directly: the declared source hash inside \code{oos_predictions_manifest.json} must equal the live hash of the file it claims to be built from. This equality is now asserted automatically by E4-S2 (Appendix~A.6) rather than needing to be checked by hand for every report cycle.}
+
+\subsection*{A.12 Additional plots}
+
+\ebox{\par
+\centering
+\footnotesize
+\begin{tabular}{p{5cm}p{10cm}}
+\toprule
+\textbf{Plot} & \textbf{Source data} \\
+\midrule
+Fig.\ 2 --- SPY price/return context & \code{data/processed/E1-S6_canonical_modeling_dataset.csv} \\
+Fig.\ 3 --- 20D volatility + regime timeline & same, \code{volatility_20d} + \code{regime} columns \\
+Fig.\ 4 --- Walk-forward + purge diagram & Appendix~A.3 fold boundary table \\
+Fig.\ 5 --- Overall OOS MAE comparison (5 models) & \code{E2-S6.../output/all_models_overall_ranking.csv} \\
+Fig.\ 6 --- LowVol vs.\ HighVol performance & Appendix~A.5 table \\
+New: per-fold improvement bar chart & Appendix~A.4 fold-level significance table \\
+\bottomrule
+\end{tabular}
+}
+
+\ibox{The last row is not on the guideline's original recommended list, and is the one plot this project most needs but does not yet have: a bar chart of each model's six per-fold improvements over baseline, grouped by model, would make Random Forest's and AdaBoost's consistent-sign bars visually distinguishable from LightGBM's and XGBoost's sign-flipping ones at a glance, in a way that a single "overall MAE" bar chart (Fig.\ 5) actively obscures by collapsing exactly the variability that Appendix~A.4 shows is the whole story.}
+
+\end{document}

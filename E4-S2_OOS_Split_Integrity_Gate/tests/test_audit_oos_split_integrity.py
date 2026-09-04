@@ -7,6 +7,7 @@ Owner: QA/QC.  Depends on: E1-S6, E2-S1, E2-S2, E2-S3, E2-S4.
 """
 from __future__ import annotations
 
+import hashlib
 import importlib.util
 import json
 import sys
@@ -299,3 +300,135 @@ def test_run_audit_returns_valid_report() -> None:
     assert "checks_passed" in report
     assert "details" in report
     assert report["verdict"] in ("PASS", "FAIL")
+
+
+# ---------------------------------------------------------------------------
+# Check 6: LightGBM cross-artifact consistency (regression tests for the
+# real, live drift found this session: results/oos_predictions.csv and
+# E2-S6's model-ranking table silently disagreed on LightGBM's own MAE.
+# Isolated with tmp_path/synthetic fixtures so they run without depending on
+# the real canonical dataset or a live pipeline run.)
+# ---------------------------------------------------------------------------
+
+def _write_oos_table(path: Path, mae_value: float) -> None:
+    """A minimal 2-row canonical OOS table with a controllable implied MAE."""
+    path.write_text(
+        "Date,prediction,actual_return_5d,regime,fold_id\n"
+        f"2020-01-01,0.0,{mae_value},LowVol,0\n"
+        f"2020-01-02,0.0,{-mae_value},LowVol,0\n"
+    )
+
+
+def _write_manifest(path: Path, source_path: Path) -> None:
+    source_hash = hashlib.sha256(source_path.read_bytes()).hexdigest()
+    path.write_text(json.dumps({
+        "source_predictions_path": str(source_path),
+        "source_predictions_sha256": source_hash,
+    }))
+
+
+def _write_ranking_table(path: Path, lightgbm_mae: float) -> None:
+    path.write_text(
+        "rank_by_mae,model,n,mae\n"
+        f"1,lightgbm,2,{lightgbm_mae}\n"
+    )
+
+
+def test_cross_artifact_check_passes_when_source_hash_and_mae_agree(tmp_path: Path) -> None:
+    source_path = tmp_path / "lightgbm_oos_predictions.csv"
+    source_path.write_text("fold,Date,regime,y_true,y_pred\n0,2020-01-01,LowVol,0.02,0.0\n")
+
+    oos_table_path = tmp_path / "oos_predictions.csv"
+    _write_oos_table(oos_table_path, mae_value=0.02)
+
+    manifest_path = tmp_path / "oos_predictions_manifest.json"
+    _write_manifest(manifest_path, source_path)
+
+    ranking_path = tmp_path / "all_models_overall_ranking.csv"
+    _write_ranking_table(ranking_path, lightgbm_mae=0.02)
+
+    gate = IntegrityGate(
+        oos_table_path=oos_table_path,
+        oos_table_manifest_path=manifest_path,
+        model_ranking_path=ranking_path,
+    )
+    result = gate._check_lightgbm_cross_artifact_consistency()
+    assert result["passed"] is True
+    assert result["source_hash_current"] is True
+    assert result["cross_table_mae_match"] is True
+    assert gate.violations == []
+
+
+def test_cross_artifact_check_fails_on_stale_source_hash(tmp_path: Path) -> None:
+    source_path = tmp_path / "lightgbm_oos_predictions.csv"
+    source_path.write_text("fold,Date,regime,y_true,y_pred\n0,2020-01-01,LowVol,0.02,0.0\n")
+
+    oos_table_path = tmp_path / "oos_predictions.csv"
+    _write_oos_table(oos_table_path, mae_value=0.02)
+
+    manifest_path = tmp_path / "oos_predictions_manifest.json"
+    _write_manifest(manifest_path, source_path)
+
+    # Source file changes (a re-run of LightGBM) *after* the manifest was
+    # written -- exactly what happened in the real repo this session.
+    source_path.write_text("fold,Date,regime,y_true,y_pred\n0,2020-01-01,LowVol,0.02,0.05\n")
+
+    ranking_path = tmp_path / "all_models_overall_ranking.csv"
+    _write_ranking_table(ranking_path, lightgbm_mae=0.02)
+
+    gate = IntegrityGate(
+        oos_table_path=oos_table_path,
+        oos_table_manifest_path=manifest_path,
+        model_ranking_path=ranking_path,
+    )
+    result = gate._check_lightgbm_cross_artifact_consistency()
+    assert result["passed"] is False
+    assert result["source_hash_current"] is False
+    assert any("STALE" in v for v in gate.violations)
+
+
+def test_cross_artifact_check_fails_on_cross_table_mae_mismatch(tmp_path: Path) -> None:
+    source_path = tmp_path / "lightgbm_oos_predictions.csv"
+    source_path.write_text("fold,Date,regime,y_true,y_pred\n0,2020-01-01,LowVol,0.02,0.0\n")
+
+    oos_table_path = tmp_path / "oos_predictions.csv"
+    _write_oos_table(oos_table_path, mae_value=0.02)
+
+    manifest_path = tmp_path / "oos_predictions_manifest.json"
+    _write_manifest(manifest_path, source_path)
+
+    # Ranking table reports a different LightGBM MAE than the current
+    # canonical OOS table implies -- the exact symptom found this session.
+    ranking_path = tmp_path / "all_models_overall_ranking.csv"
+    _write_ranking_table(ranking_path, lightgbm_mae=0.016056)
+
+    gate = IntegrityGate(
+        oos_table_path=oos_table_path,
+        oos_table_manifest_path=manifest_path,
+        model_ranking_path=ranking_path,
+    )
+    result = gate._check_lightgbm_cross_artifact_consistency()
+    assert result["passed"] is False
+    assert result["cross_table_mae_match"] is False
+    assert any("MAE disagreement" in v for v in gate.violations)
+
+
+def test_cross_artifact_check_warns_when_ranking_table_absent(tmp_path: Path) -> None:
+    source_path = tmp_path / "lightgbm_oos_predictions.csv"
+    source_path.write_text("fold,Date,regime,y_true,y_pred\n0,2020-01-01,LowVol,0.02,0.0\n")
+
+    oos_table_path = tmp_path / "oos_predictions.csv"
+    _write_oos_table(oos_table_path, mae_value=0.02)
+
+    manifest_path = tmp_path / "oos_predictions_manifest.json"
+    _write_manifest(manifest_path, source_path)
+
+    gate = IntegrityGate(
+        oos_table_path=oos_table_path,
+        oos_table_manifest_path=manifest_path,
+        model_ranking_path=tmp_path / "does_not_exist.csv",
+    )
+    result = gate._check_lightgbm_cross_artifact_consistency()
+    assert result["passed"] is True  # nothing to cross-check yet is not a violation
+    assert result["cross_table_mae_match"] is None
+    assert any("ranking table not found" in w for w in gate.warnings)

@@ -119,10 +119,13 @@ def _validate_canonical(df: pd.DataFrame, cfg: Config) -> None:
     if df.isna().any().any():
         raise DataValidationError("Canonical dataset contains NaN values")
 
-    # No non-finite target.
-    target_vals = df[cfg.target.column].to_numpy(dtype=float)
-    if not np.isfinite(target_vals).all():
-        raise DataValidationError(f"Non-finite values in {cfg.target.column}")
+    # No non-finite target or feature values (an inf in a feature column would
+    # otherwise reach LGBMRegressor.fit uncaught -- see
+    # docs/E2-S2_LightGBM_single_config_audit_report.md Sec. 6).
+    numeric_cols = list(cfg.feature_columns) + [cfg.target.column]
+    numeric_vals = df[numeric_cols].to_numpy(dtype=float)
+    if not np.isfinite(numeric_vals).all():
+        raise DataValidationError(f"Non-finite values in one of: {numeric_cols}")
 
     # Regime labels valid.
     regime_vals = set(df[cfg.regime.column].dropna().unique())
@@ -281,6 +284,20 @@ def run_baseline(cfg: Config, force: bool = False) -> StageContract:
 # Stage B: LightGBM training (E2-S2)
 # ---------------------------------------------------------------------------
 
+def lightgbm_model_params(cfg: Config) -> dict[str, Any]:
+    """Effective LGBMRegressor kwargs for this pipeline's LightGBM stage.
+
+    random_state tracks cfg.model.seed (the pipeline's single source of truth
+    for the seed) rather than living as a second, independently maintained
+    value in pipeline_config.yaml's lightgbm_params -- that duplication is
+    exactly what let this path silently diverge from train_lightgbm.py's
+    reviewed configuration (missing random_state/n_jobs) and produce a
+    different, though individually deterministic, fit. See
+    docs/E2-S2_LightGBM_single_config_audit_report.md Sec. 1.
+    """
+    return {**cfg.model.lightgbm_params, "random_state": cfg.model.seed, "n_jobs": -1}
+
+
 def run_lightgbm(cfg: Config, force: bool = False) -> StageContract:
     """Run the LightGBM training stage."""
     df = _load_canonical(cfg)
@@ -311,6 +328,8 @@ def run_lightgbm(cfg: Config, force: bool = False) -> StageContract:
             f"just loaded ({file_hash(canonical_path)})"
         )
 
+    model_params = lightgbm_model_params(cfg)
+
     input_hashes = {
         str(canonical_path): file_hash(canonical_path),
         str(baseline_summary_path): file_hash(baseline_summary_path),
@@ -324,7 +343,7 @@ def run_lightgbm(cfg: Config, force: bool = False) -> StageContract:
             "min_train_size": cfg.model.min_train_size,
             "horizon_trading_days": cfg.model.horizon_trading_days,
             "seed": cfg.model.seed,
-            "hyperparameters": dict(cfg.model.lightgbm_params),
+            "hyperparameters": dict(model_params),
             "target_column": cfg.target.column,
             "feature_columns": list(cfg.feature_columns),
         },
@@ -361,7 +380,7 @@ def run_lightgbm(cfg: Config, force: bool = False) -> StageContract:
         if len(fold.train_idx) == 0 or len(fold.test_idx) == 0:
             raise EmptyFoldError(f"fold {fold.fold_id}: empty train or test block")
 
-        model = lgb.LGBMRegressor(**cfg.model.lightgbm_params)
+        model = lgb.LGBMRegressor(**model_params)
         model.fit(X_train, y_train)
 
         test_pred = model.predict(X_test)
@@ -417,7 +436,7 @@ def run_lightgbm(cfg: Config, force: bool = False) -> StageContract:
         "card": "E2-S2 [P0][Model] Train Minimal LightGBM Regressor",
         "generated_at_utc": now_utc_iso(),
         "seed": cfg.model.seed,
-        "hyperparameters": cfg.model.lightgbm_params,
+        "hyperparameters": model_params,
         "target_column": cfg.target.column,
         "feature_columns": cfg.feature_columns,
         "canonical_dataset_path": str(canonical_path.relative_to(cfg._repo_root)).replace("\\", "/"),

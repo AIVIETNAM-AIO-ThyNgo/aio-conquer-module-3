@@ -1,7 +1,7 @@
 {
   "card": "E2-S6 [Model] Train Random Forest / AdaBoost / XGBoost (follow-up, not a board card)",
   "model": "random_forest",
-  "generated_at_utc": "2026-09-01T05:10:26.216583+00:00",
+  "generated_at_utc": "2026-09-04T05:18:21.535801+00:00",
   "seed": 42,
   "hyperparameters": {
     "n_estimators": 200,
@@ -26,18 +26,18 @@
     "volume_ratio_20d"
   ],
   "canonical_dataset_path": "data/processed/E1-S6_canonical_modeling_dataset.csv",
-  "canonical_dataset_sha256": "96f79c15ff277bf0a8f8107a6313ac86e85888d4dbdbe7f7bd4ddc0c297b4da6",
+  "canonical_dataset_sha256": "94647ea09890da14aa980a83a04e0b3965047515aed47dcf01bc477da56f3bcf",
   "split_params": {
     "n_folds": 6,
     "min_train_size": 1260,
     "horizon_trading_days": 5
   },
   "overall_metrics": {
-    "n_oos_rows": 3905,
+    "n_oos_rows": 3899,
     "n_folds": 6,
-    "mae": 0.015615339752542586,
-    "prediction_correlation": 0.10315585413606967,
-    "directional_hit_rate": 0.5953905249679897,
+    "mae": 0.015625188893666434,
+    "prediction_correlation": 0.10468900397954188,
+    "directional_hit_rate": 0.5965632213388048,
     "predictions_nearly_constant": false
   },
   "train_metrics_are_diagnostic_only": "train_mae_diagnostic_only measures in-sample fit and is reported for overfitting diagnostics ONLY. No claim may cite it; all claims rely on OOS columns computed on held-out test folds.",
@@ -48,5 +48,5 @@
     "scikit-learn": "1.9.0",
     "xgboost": "3.4.1"
   },
-  "python": "3.13.5"
+  "python": "3.14.7"
 }

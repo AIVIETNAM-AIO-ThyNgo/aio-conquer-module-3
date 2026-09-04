@@ -14,6 +14,10 @@ Checks performed:
 3. No test data used for feature/model decisions inside fold.
 4. OOS table contains no in-sample predictions or duplicate prediction dates.
 5. Baseline and LightGBM are compared on identical OOS rows.
+6. LightGBM's reported numbers agree across every downstream artifact that
+   depends on it (results/oos_predictions.csv vs. its declared source file,
+   and vs. E2-S6's model-ranking table) -- catches the canonical OOS table
+   silently going stale relative to a re-run LightGBM stage.
 
 BLOCKER RULE: Any violation invalidates current performance results and
 requires a clean rerun of the pipeline.
@@ -73,11 +77,15 @@ class IntegrityGate:
         oos_table_path: Path | None = None,
         baseline_pred_path: Path | None = None,
         lightgbm_pred_path: Path | None = None,
+        oos_table_manifest_path: Path | None = None,
+        model_ranking_path: Path | None = None,
     ):
         self.canonical_path = canonical_path or REPO_ROOT / "data" / "processed" / "E1-S6_canonical_modeling_dataset.csv"
         self.oos_table_path = oos_table_path or REPO_ROOT / "results" / "oos_predictions.csv"
         self.baseline_pred_path = baseline_pred_path or REPO_ROOT / "E2-S1_Baseline_Zero_Predictor" / "output" / "baseline_zero_oos_predictions.csv"
         self.lightgbm_pred_path = lightgbm_pred_path or REPO_ROOT / "E2-S2_Train_Minimal_LightGBM_Regressor" / "output" / "lightgbm_oos_predictions.csv"
+        self.oos_table_manifest_path = oos_table_manifest_path or REPO_ROOT / "results" / "oos_predictions_manifest.json"
+        self.model_ranking_path = model_ranking_path or REPO_ROOT / "E2-S6_Multi_Model_Comparison" / "output" / "all_models_overall_ranking.csv"
 
         self.violations: list[str] = []
         self.warnings: list[str] = []
@@ -109,6 +117,7 @@ class IntegrityGate:
         details["no_test_data_in_features"] = self._check_no_test_data_in_features(folds, canonical_df)
         details["oos_table_integrity"] = self._check_oos_table_integrity(canonical_df)
         details["model_comparison_fairness"] = self._check_model_comparison_fairness()
+        details["lightgbm_cross_artifact_consistency"] = self._check_lightgbm_cross_artifact_consistency()
 
         # Compile report
         verdict = "FAIL" if self.violations else "PASS"
@@ -465,6 +474,104 @@ class IntegrityGate:
             results["passed"] = False
         else:
             self.checks_passed.append("Model comparison: same OOS dates")
+
+        return results
+
+    def _check_lightgbm_cross_artifact_consistency(self) -> dict[str, Any]:
+        """Check 6: LightGBM's numbers agree everywhere they are reported.
+
+        This project has already, once, silently reported two different
+        LightGBM OOS MAE/correlation/hit-rate values from two different
+        underlying runs in two different downstream tables at the same time
+        (results/oos_predictions.csv's regime table vs. E2-S6's model-ranking
+        table) -- see docs/E2-S2_LightGBM_single_config_audit_report.md.
+        Every prior check in this gate would have PASSED throughout that
+        episode, because none of them compare LightGBM's own numbers across
+        the tables that depend on it. This check closes that gap two ways:
+
+          1. results/oos_predictions_manifest.json declares which E2-S2
+             output file it was built from, by sha256. If the file at that
+             path has since been regenerated (different LightGBM run) without
+             results/oos_predictions.csv being regenerated to match, the
+             recorded hash goes stale -- catch that directly.
+          2. If E2-S6's own ranking table exists, its reported LightGBM MAE/
+             correlation/hit-rate must equal what results/oos_predictions.csv
+             produces right now, to floating-point tolerance.
+        """
+        results = {
+            "source_hash_current": None,
+            "cross_table_mae_match": None,
+            "passed": True,
+        }
+
+        manifest_path = self.oos_table_manifest_path
+        if not manifest_path.exists() or not self.oos_table_path.exists():
+            self.warnings.append(
+                f"Cannot check LightGBM cross-artifact consistency: "
+                f"{manifest_path} or {self.oos_table_path} not found"
+            )
+            return results
+
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        source_path = REPO_ROOT / manifest["source_predictions_path"]
+        recorded_hash = manifest.get("source_predictions_sha256")
+
+        if not source_path.exists():
+            self.warnings.append(
+                f"results/oos_predictions.csv's declared source is missing: {source_path}"
+            )
+        else:
+            actual_hash = hashlib.sha256(source_path.read_bytes()).hexdigest()
+            source_current = actual_hash == recorded_hash
+            results["source_hash_current"] = source_current
+            if not source_current:
+                msg = (
+                    f"results/oos_predictions.csv is STALE: its manifest records "
+                    f"{source_path.name} sha256={recorded_hash}, but the file on disk "
+                    f"now hashes to {actual_hash}. LightGBM was re-run without "
+                    f"regenerating the canonical OOS table -- every downstream table "
+                    f"built from results/oos_predictions.csv is reporting a different "
+                    f"LightGBM run than currently sits in {source_path.name}."
+                )
+                self.violations.append(msg)
+                results["passed"] = False
+            else:
+                self.checks_passed.append(
+                    "results/oos_predictions.csv matches its declared LightGBM source (not stale)"
+                )
+
+        ranking_path = self.model_ranking_path
+        if ranking_path.exists():
+            canonical_df = pd.read_csv(self.oos_table_path, parse_dates=["Date"])
+            live_mae = float(np.mean(np.abs(canonical_df["actual_return_5d"] - canonical_df["prediction"])))
+
+            ranking_df = pd.read_csv(ranking_path)
+            lgbm_row = ranking_df[ranking_df["model"] == "lightgbm"]
+            if lgbm_row.empty:
+                self.warnings.append(f"No 'lightgbm' row found in {ranking_path}")
+            else:
+                table_mae = float(lgbm_row.iloc[0]["mae"])
+                match = np.isclose(live_mae, table_mae, rtol=1e-9, atol=1e-12)
+                results["cross_table_mae_match"] = bool(match)
+                if not match:
+                    msg = (
+                        f"LightGBM MAE disagreement between tables: "
+                        f"results/oos_predictions.csv implies MAE={live_mae!r}, but "
+                        f"{ranking_path.name}'s committed lightgbm row says MAE={table_mae!r}. "
+                        f"RQ2 (regime table) and RQ3 (model-ranking table) are currently "
+                        f"built from two different LightGBM runs -- re-run "
+                        f"compare_all_models.py to regenerate the ranking table from the "
+                        f"current results/oos_predictions.csv before reporting either."
+                    )
+                    self.violations.append(msg)
+                    results["passed"] = False
+                else:
+                    self.checks_passed.append(
+                        "LightGBM MAE agrees between results/oos_predictions.csv and "
+                        "E2-S6's model-ranking table"
+                    )
+        else:
+            self.warnings.append(f"E2-S6 ranking table not found: {ranking_path} (nothing to cross-check yet)")
 
         return results
 

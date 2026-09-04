@@ -1,6 +1,6 @@
 {
   "card": "E2-S6 [Model] Compare Baseline / LightGBM / RandomForest / AdaBoost / XGBoost (follow-up, not a board card)",
-  "generated_at_utc": "2026-09-01T05:10:23.830888+00:00",
+  "generated_at_utc": "2026-09-04T05:18:27.107640+00:00",
   "models": [
     "baseline_zero",
     "lightgbm",
@@ -18,9 +18,10 @@
   "best_model_by_overall_prediction_correlation": "random_forest",
   "best_model_by_overall_directional_hit_rate": "random_forest",
   "is_lightgbm_best_declaration": "By OOS MAE (Overall), the lowest-error model is 'random_forest'. By prediction correlation, the highest is 'random_forest'. By directional hit rate, the highest is 'random_forest'. These need not agree, and are reported separately rather than collapsed into a single 'winner' -- see README for the honest reading.",
+  "fold_level_significance_declaration": "mae_improvement_over_baseline in the ranking table above is a point estimate only. fold_level_significance.json reports a naive across-fold significance check per model (see metrics.paired_fold_significance) -- consult it before treating any ranking difference as a real effect rather than fold-to-fold noise.",
   "package_versions": {
     "numpy": "2.5.2",
     "pandas": "3.0.5"
   },
-  "python": "3.13.5"
+  "python": "3.14.7"
 }

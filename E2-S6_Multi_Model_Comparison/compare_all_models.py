@@ -39,12 +39,15 @@ sys.path.insert(0, str(E2_S1_DIR))
 sys.path.insert(0, str(E2_S5_DIR))
 
 from evaluate_regime_performance import (  # noqa: E402
+    BASELINE_OOS_PATH,
+    CANONICAL_OOS_PATH,
     SCOPES,
     assert_same_oos_rows,
     evaluate_model,
     load_baseline_predictions,
     load_lightgbm_predictions,
 )
+from metrics import mae, paired_fold_significance  # noqa: E402
 
 OUTPUT_DIR = Path(__file__).resolve().parent / "output"
 ADDITIONAL_MODELS = ["random_forest", "adaboost", "xgboost"]
@@ -56,7 +59,54 @@ def load_additional_model_predictions(model_name: str) -> pd.DataFrame:
     if not path.exists():
         raise FileNotFoundError(f"{path} not found -- run train_additional_models.py first")
     df = pd.read_csv(path, parse_dates=["Date"])
-    return df[["Date", "regime", "y_true", "y_pred"]].copy()
+    return df[["fold", "Date", "regime", "y_true", "y_pred"]].copy()
+
+
+def load_fold_labeled_baseline_and_lightgbm() -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Fold-labeled baseline/LightGBM predictions.
+
+    load_baseline_predictions/load_lightgbm_predictions (imported above) drop
+    the fold column, which is fine for their own overall/regime-scoped use
+    but insufficient here -- computing paired_fold_significance requires one
+    MAE per fold, so the fold label has to survive the load.
+    """
+    baseline_df = pd.read_csv(BASELINE_OOS_PATH, parse_dates=["Date"])
+    baseline_df = baseline_df.rename(columns={"fold": "fold_id"}) if "fold" in baseline_df.columns else baseline_df
+    lightgbm_df = pd.read_csv(CANONICAL_OOS_PATH, parse_dates=["Date"])
+    lightgbm_df = lightgbm_df.rename(columns={"prediction": "y_pred", "actual_return_5d": "y_true"})
+    return baseline_df[["fold_id", "y_true", "y_pred"]], lightgbm_df[["fold_id", "y_true", "y_pred"]]
+
+
+def per_fold_mae(df: pd.DataFrame) -> pd.Series:
+    """One MAE per fold_id, in fold order."""
+    return df.groupby("fold_id").apply(
+        lambda g: mae(g["y_true"].to_numpy(), g["y_pred"].to_numpy()), include_groups=False
+    ).sort_index()
+
+
+def build_fold_level_significance(model_dfs: dict[str, pd.DataFrame]) -> dict:
+    """Naive paired-fold significance of each model's MAE improvement over
+    baseline -- see metrics.paired_fold_significance for the method and its
+    disclosed limitations. Exists because the overall_ranking table above
+    reports point-estimate differences (0.0001-0.0006) an order of magnitude
+    smaller than the fold-to-fold MAE swings already visible in every
+    model's own per-fold metrics, with no significance check anywhere in
+    this project before this function was added.
+    """
+    baseline_df, lightgbm_df = load_fold_labeled_baseline_and_lightgbm()
+    fold_mae = {"baseline_zero": per_fold_mae(baseline_df), "lightgbm": per_fold_mae(lightgbm_df)}
+    for name in ADDITIONAL_MODELS:
+        df = model_dfs[name].rename(columns={"fold": "fold_id"})
+        fold_mae[name] = per_fold_mae(df)
+
+    baseline_fold_mae = fold_mae["baseline_zero"]
+    significance = {}
+    for name in ALL_MODELS:
+        if name == "baseline_zero":
+            continue
+        improvements = (baseline_fold_mae - fold_mae[name]).to_numpy()
+        significance[name] = paired_fold_significance(improvements)
+    return significance
 
 
 def build_overall_ranking(results: pd.DataFrame) -> pd.DataFrame:
@@ -89,10 +139,14 @@ def run() -> None:
     results = pd.DataFrame(rows)
 
     overall_ranking = build_overall_ranking(results)
+    fold_significance = build_fold_level_significance(model_dfs)
 
     OUTPUT_DIR.mkdir(exist_ok=True)
     results.to_csv(OUTPUT_DIR / "all_models_regime_performance.csv", index=False)
     overall_ranking.to_csv(OUTPUT_DIR / "all_models_overall_ranking.csv", index=False)
+    (OUTPUT_DIR / "fold_level_significance.json").write_text(
+        json.dumps(fold_significance, indent=2, default=str), encoding="utf-8"
+    )
 
     overall_only = results[results["scope"] == "Overall"].set_index("model")
     best_mae_model = overall_only["mae"].idxmin()
@@ -119,6 +173,13 @@ def run() -> None:
             "These need not agree, and are reported separately rather than collapsed into "
             "a single 'winner' -- see README for the honest reading."
         ),
+        "fold_level_significance_declaration": (
+            "mae_improvement_over_baseline in the ranking table above is a point "
+            "estimate only. fold_level_significance.json reports a naive across-fold "
+            "significance check per model (see metrics.paired_fold_significance) -- "
+            "consult it before treating any ranking difference as a real effect "
+            "rather than fold-to-fold noise."
+        ),
         "package_versions": {"numpy": np.__version__, "pandas": pd.__version__},
         "python": platform.python_version(),
     }
@@ -128,6 +189,13 @@ def run() -> None:
 
     print(f"Wrote comparison for {len(ALL_MODELS)} models to {OUTPUT_DIR}")
     print(overall_ranking.to_string(index=False))
+    print("\nNaive fold-level significance (screening heuristic, see metrics.paired_fold_significance):")
+    for name, sig in fold_significance.items():
+        print(
+            f"  {name}: t={sig['naive_t_stat']:.2f}, "
+            f"sign_consistent={sig['sign_consistent_across_all_folds']}, "
+            f"verdict={sig['verdict']}"
+        )
 
 
 if __name__ == "__main__":

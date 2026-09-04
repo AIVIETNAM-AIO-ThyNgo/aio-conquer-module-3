@@ -314,3 +314,85 @@ def test_run_pipeline_single_stage(tmp_path):
     ret = main(["baseline"])
     assert ret == 0
     assert (cfg.resolve(cfg.paths.baseline_output_dir) / "baseline_zero_summary.json").exists()
+
+
+# ---------------------------------------------------------------------------
+# LightGBM seed/config parity (regression tests for the E2-S2 audit finding:
+# docs/E2-S2_LightGBM_single_config_audit_report.md Sec. 1/9 -- the pipeline
+# path silently omitted random_state/n_jobs, producing a different, though
+# individually deterministic, fit than the reviewed standalone script. These
+# tests use small synthetic data rather than the real canonical dataset so
+# they run without data/processed/E1-S6_canonical_modeling_dataset.csv
+# present on disk.)
+# ---------------------------------------------------------------------------
+
+import lightgbm as lgb  # noqa: E402
+
+from pipeline.model import lightgbm_model_params  # noqa: E402
+
+
+def _synthetic_canonical_df(cfg, n=300, seed=0):
+    """A canonical-shaped frame: same columns, unrelated random content.
+
+    Only used to exercise LightGBM's fit/predict mechanics (determinism,
+    parameter plumbing) -- never asserted against real MAE/correlation
+    numbers, which require the real dataset.
+    """
+    rng = np.random.default_rng(seed)
+    df = pd.DataFrame(
+        {col: rng.standard_normal(n) for col in cfg.feature_columns}
+    )
+    df[cfg.target.column] = rng.standard_normal(n) * 0.02
+    return df
+
+
+def test_lightgbm_model_params_includes_seed_and_n_jobs():
+    """Regression test: the pipeline path must not silently drop the seed.
+
+    Before the fix, cfg.model.lightgbm_params (sourced straight from
+    pipeline_config.yaml) had no random_state/n_jobs key at all, so
+    LGBMRegressor fell back to LightGBM's internal default seeds instead of
+    cfg.model.seed -- a real, deterministic hyperparameter delta (not
+    run-to-run noise) because subsample/colsample_bytree < 1 make the seed
+    behaviorally relevant.
+    """
+    cfg = load_config(CONFIG_PATH)
+    params = lightgbm_model_params(cfg)
+    assert params["random_state"] == cfg.model.seed
+    assert params["n_jobs"] == -1
+
+
+def test_lightgbm_model_params_matches_reviewed_standalone_script():
+    """The pipeline's effective LightGBM config must equal train_lightgbm.py's
+    reviewed LIGHTGBM_PARAMS exactly -- the two are meant to be the same
+    frozen E2-S2 configuration, not two independently-maintained dicts that
+    can silently drift (as they did: see the audit report referenced above).
+    """
+    e2_s2_dir = REPO_ROOT / "E2-S2_Train_Minimal_LightGBM_Regressor"
+    sys.path.insert(0, str(e2_s2_dir))
+    import train_lightgbm  # noqa: E402
+
+    cfg = load_config(CONFIG_PATH)
+    assert lightgbm_model_params(cfg) == train_lightgbm.LIGHTGBM_PARAMS
+
+
+def test_run_lightgbm_pipeline_path_is_deterministic_on_synthetic_data():
+    """Mirrors E2-S2's test_same_seed_same_fold_produces_identical_predictions,
+    but for the pipeline's YAML-driven parameter path specifically -- that
+    path had no determinism test of its own, which is how the seed-drop went
+    undetected.
+    """
+    cfg = load_config(CONFIG_PATH)
+    df = _synthetic_canonical_df(cfg)
+    X, y = df[cfg.feature_columns], df[cfg.target.column]
+    params = lightgbm_model_params(cfg)
+
+    model_a = lgb.LGBMRegressor(**params)
+    model_a.fit(X, y)
+    pred_a = model_a.predict(X)
+
+    model_b = lgb.LGBMRegressor(**params)
+    model_b.fit(X, y)
+    pred_b = model_b.predict(X)
+
+    assert np.array_equal(pred_a, pred_b)
