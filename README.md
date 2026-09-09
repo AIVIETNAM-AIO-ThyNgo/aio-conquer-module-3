@@ -1,100 +1,211 @@
-# M03 — Gradient Boosting Signals Across Market Regimes
+# Effect of Data Drift on Gradient Boosting Models
 
-Research question: does a LightGBM signal for SPY five-trading-day forward returns retain different genuine out-of-sample predictive performance in Low-Vol versus High-Vol regimes?
+A leakage-safe machine-learning study of whether signals learned from historical **SPY** data remain predictive when market volatility regimes change.
 
-This branch implements the Trello Data Foundation cards through E1-S6, the
-E4-S1 leakage/QA gate, and the E2 modeling cards through E2-S5 (baseline,
-LightGBM, walk-forward validation, canonical OOS table, regime-conditioned
-evaluation):
+## Overview
 
-- [E1-S1 — Acquire & Version Raw SPY OHLCV](https://trello.com/c/XZnNG075)
-- [E1-S2 — Validate Raw Market Data](https://trello.com/c/ylsf1Ag0)
-- [E1-S3 — Build Returns & 5-Trading-Day Forward Target](https://trello.com/c/dRR58WDg)
-- [E1-S4 — Build Historical Feature Set](https://trello.com/c/1nBr3JrS)
-- [E1-S5 — Construct Leakage-Safe Low/High Volatility Regime](https://trello.com/c/G8hsrnJR)
-- [E1-S6 — Publish Canonical Modeling Dataset & Data Dictionary](https://trello.com/c/4wwdJQnv)
-- E4-S1 — Pre-Model Leakage & Data Quality Gate (`docs/E4-S1_leakage_audit_record.md`)
-- E2-S1 — Baseline Zero Predictor (`E2-S1_Baseline_Zero_Predictor/`)
-- E2-S2 — Train Minimal LightGBM Regressor (`E2-S2_Train_Minimal_LightGBM_Regressor/`)
-- E2-S3 — Leakage-Safe Walk-Forward Validation (`E2-S3_Leakage_Safe_Walk_Forward_Validation/`)
-- E2-S4 — Generate Canonical OOS Prediction Table (`E2-S4_Generate_Canonical_OOS_Prediction_Table/`)
-- E2-S5 — Evaluate Overall/LowVol/HighVol Performance (`E2-S5_Evaluate_Overall_LowVol_HighVol_Performance/`)
+This project predicts the **5-trading-day forward return of SPY** from historical price and volume features, then evaluates whether model performance changes between **LowVol** and **HighVol** market regimes.
 
-`E2-S6_Multi_Model_Comparison/` is a follow-up, not a board card: it compares
-LightGBM against Random Forest, AdaBoost and XGBoost on the same folds.
+The repository implements the full research workflow:
 
-## Primary artifacts
+1. Acquire and validate auto-adjusted daily SPY OHLCV data.
+2. Build a canonical modeling dataset with historical-only features.
+3. Construct volatility regimes without using future information.
+4. Train baseline and tree-based regression models.
+5. Generate genuine out-of-sample predictions with purged walk-forward validation.
+6. Compare overall and regime-conditioned performance.
+7. Audit data integrity, split boundaries, and out-of-sample errors.
 
-### E3-S2: Unified Pipeline (new)
+> This is a predictive research project, not an executable trading strategy. It does not model transaction costs, turnover, portfolio sizing, slippage, or causal effects.
 
-- `E3-S2_Data_Model_Integration_Flow/pipeline_config.yaml`: single source of truth for all parameters.
-- `E3-S2_Data_Model_Integration_Flow/pipeline/run_pipeline.py`: single entry point.
-- `E3-S2_Data_Model_Integration_Flow/pipeline/config.py`: loads/validates YAML into frozen dataclasses.
-- `E3-S2_Data_Model_Integration_Flow/pipeline/contract.py`: StageContract with hash chaining.
-- `E3-S2_Data_Model_Integration_Flow/pipeline/data_foundation.py`: E1-S3→E1-S6 logic ported from the notebook.
-- `E3-S2_Data_Model_Integration_Flow/pipeline/model.py`: walk-forward training + OOS prediction (reuses E2-S1's `splits.py` and `metrics.py` unchanged).
-- `E3-S2_Data_Model_Integration_Flow/pipeline/tests/test_pipeline.py`: 20 tests for the unified pipeline.
-- pipeline_manifest.json: aggregated contract of all stages (generated at repo root).
+## Research Question
 
-### E1: Data Foundation
+**Do gradient-boosting signals trained on historical SPY data retain predictive value when the market moves between low- and high-volatility regimes?**
 
-- `data/raw/E1-S1_SPY_OHLCV_auto_adjusted.csv`: immutable auto-adjusted SPY OHLCV input.
-- `data/raw/E1-S1_SPY_OHLCV_auto_adjusted.provenance.json`: source, date range, acquisition convention, raw SHA-256.
-- `data/processed/E1-S6_canonical_modeling_dataset.csv`: the only admitted modeling row set.
-- `data/processed/E1-S6_dataset_manifest.json`: schema, hashes, package versions, regime definition.
-- `docs/E1-S6_data_dictionary.csv`: formula, window, units, role, timestamp semantics, missing-value policy for every canonical column.
-- `E1-S3_to_E1-S6_Data_Foundation_and_Regime_Construction.ipynb`: original notebook (superseded by the pipeline but retained for reference).
-- `tests/test_E1_S6_canonical_dataset.py`: independent verification of the E1-S6 canonical dataset.
+## Key Findings
 
-### E2: Model Stages (original, unchanged)
+Results reported in the accompanying technical report show that:
 
-The pipeline reuses the shared `splits.py` and `metrics.py` from E2-S1 rather than reimplementing them, so the baseline/LightGBM/validation comparison remains valid by construction:
+- The zero-return baseline achieved an overall MAE of approximately **0.01596**.
+- LightGBM achieved an overall MAE of approximately **0.01606**.
+- LightGBM slightly improved on the baseline in **LowVol** periods but underperformed it in **HighVol** periods.
+- In the fixed multi-model comparison, **Random Forest** produced the strongest overall result with MAE **0.015615**, correlation **0.103**, and directional hit rate **0.595**.
+- Predictive performance is therefore regime-dependent, and the primary LightGBM signal does not remain uniformly robust when volatility rises.
 
-- `E2-S1_Baseline_Zero_Predictor/` — baseline y_hat=0, shared splits/metrics
-  - `run_baseline.py`, `splits.py`, `metrics.py`, `README.md`
-  - `output/baseline_zero_oos_predictions.csv`, `output/baseline_zero_fold_metrics.csv`, `output/baseline_zero_summary.json`
-  - `tests/test_baseline_zero.py`
-- `E2-S2_Train_Minimal_LightGBM_Regressor/` — LightGBM training
-  - `train_lightgbm.py`, `README.md`
-  - `output/lightgbm_oos_predictions.csv`, `output/lightgbm_fold_metrics.csv`, `output/lightgbm_summary.json`
-  - `tests/test_train_lightgbm.py`
-- `E2-S3_Leakage_Safe_Walk_Forward_Validation/` — walk-forward validation audit
-  - `validate_walk_forward.py`, `README.md`
-  - `output/fold_boundary_audit.csv`, `output/walk_forward_validation_summary.json`
-  - `tests/test_walk_forward_validation.py`
-- `E2-S4_Generate_Canonical_OOS_Prediction_Table/` — canonical OOS table
-  - `generate_oos_predictions.py`, `README.md`
-  - `tests/test_generate_oos_predictions.py`
+These values describe the frozen experiment reported by the project. Re-running with live market data may produce different row counts and metrics.
 
-### E4: Leakage Audit
+## Methodology
 
-- `docs/E4-S1_leakage_audit_record.md`: pre-model leakage & data quality gate audit record.
+### Data
 
-### Results
+- **Instrument:** SPDR S&P 500 ETF Trust (SPY)
+- **Frequency:** Daily
+- **Source:** Yahoo Finance through `yfinance`
+- **Adjustment:** Auto-adjusted OHLCV
+- **Configured start date:** `2005-01-01`
+- **Configured end date:** `null` — download through the most recent trading day
 
-- `results/oos_predictions.csv`: canonical OOS prediction table (one row per genuine OOS prediction).
-- `results/oos_predictions_manifest.json`: manifest for the canonical OOS table.
+### Target
 
-## Frozen E1-S4 features
+```text
+forward_return_5d = Close(t+5) / Close(t) - 1
+```
 
-The canonical dataset contains 11 features:
+The target is used only as `y`; it is never included in the feature set.
 
-- Returns: `return_1d`, `return_5d`, `return_10d`, `return_20d`.
-- Annualized realized volatility: `volatility_5d`, `volatility_10d`, `volatility_20d` (`ddof=1`).
-- Trend versus right-aligned moving average: `trend_10d`, `trend_20d`, `trend_60d`.
-- Volume: `volume_ratio_20d`.
+### Features
 
-Every feature uses information available at or before prediction date `t`. The target `forward_return_5d = Close_(t+5) / Close_t - 1` is used only as `y`.
+The canonical dataset contains 11 historical features:
 
-## Leakage-safe E1-S5 regime
+| Group | Features |
+|---|---|
+| Returns | `return_1d`, `return_5d`, `return_10d`, `return_20d` |
+| Realized volatility | `volatility_5d`, `volatility_10d`, `volatility_20d` |
+| Trend | `trend_10d`, `trend_20d`, `trend_60d` |
+| Volume | `volume_ratio_20d` |
 
-`volatility_20d` is compared with the expanding median of 20-day volatility values strictly before `t`. The threshold requires at least 252 prior volatility observations. Equality is classified as `HighVol`; no smoothing or full-sample threshold is used.
+Every feature uses information available at or before prediction date `t`.
 
-## Scope boundary
+### Market Regimes
 
-This work establishes the full E1→E2 pipeline from raw data to OOS predictions. Regime-conditioned evaluation and reporting belong to later stories, which should read `results/oos_predictions.csv` rather than either model's raw `output/*_oos_predictions.csv`.
-E1 establishes the canonical modeling dataset only (features, target, regime
-label) -- no model is trained in E1. LightGBM training, purged walk-forward
-splits, canonical OOS predictions and regime-conditioned evaluation are
-implemented in the `E2-S*` folders at the repository root, each with its own
-README documenting deliverable, acceptance criteria and edge cases.
+The regime label compares `volatility_20d` with an expanding median calculated from volatility observations strictly before `t`.
+
+- At least **252 prior observations** are required.
+- Values below the historical threshold are labeled `LowVol`.
+- Equality and values above the threshold are labeled `HighVol`.
+- No full-sample threshold or future information is used.
+
+### Validation
+
+The experiment uses expanding walk-forward validation with:
+
+- **6 folds**
+- **1,260 observations** minimum initial training window
+- **5-trading-day purge** matching the prediction horizon
+- Chronological train/test separation
+- One prediction per genuine out-of-sample row
+
+## Models
+
+| Model | Role |
+|---|---|
+| Zero-return predictor | Naive benchmark |
+| LightGBM regressor | Primary gradient-boosting model |
+| Random Forest | Bagging-based comparison |
+| XGBoost | Alternative boosting comparison |
+| AdaBoost | Alternative boosting comparison |
+
+Model parameters and pipeline paths are defined in `E3-S2_Data_Model_Integration_Flow/pipeline_config.yaml`.
+
+## Repository Structure
+
+```text
+.
+├── data/                                      # Raw and processed datasets
+├── docs/                                      # Data dictionary and audit records
+├── E2-S1_Baseline_Zero_Predictor/             # Zero-return benchmark
+├── E2-S2_Train_Minimal_LightGBM_Regressor/    # Primary LightGBM model
+├── E2-S3_Leakage_Safe_Walk_Forward_Validation/# Split and leakage audit
+├── E2-S4_Generate_Canonical_OOS_Prediction_Table/
+├── E2-S5_Evaluate_Overall_LowVol_HighVol_Performance/
+├── E2-S6_Multi_Model_Comparison/              # RF, XGBoost, AdaBoost comparison
+├── E2-S7_OOS_Error_Analysis/                  # OOS diagnostic analysis
+├── E3-S2_Data_Model_Integration_Flow/         # Unified reproducible pipeline
+├── E4-S2_OOS_Split_Integrity_Gate/            # OOS integrity checks
+├── results/                                   # Canonical OOS outputs
+├── tests/                                     # Canonical dataset tests
+├── pipeline_manifest.json                     # Stage-level contract manifest
+└── requirements.txt
+```
+
+Each experiment folder contains its own README, scripts, tests, and generated outputs.
+
+## Installation
+
+Python 3.10 or later is recommended.
+
+```bash
+git clone https://github.com/AIVIETNAM-AIO-ThyNgo/aio-conquer-module-3.git
+cd aio-conquer-module-3
+
+python -m venv .venv
+source .venv/bin/activate       # Windows: .venv\Scripts\activate
+pip install -r requirements.txt
+```
+
+Core dependencies include NumPy, pandas, scikit-learn, LightGBM, XGBoost, yfinance, matplotlib, and pytest.
+
+## Reproduce the Pipeline
+
+Run the unified data and primary-model pipeline:
+
+```bash
+cd E3-S2_Data_Model_Integration_Flow
+python -m pipeline.run_pipeline --force
+cd ..
+```
+
+Run the additional model comparison:
+
+```bash
+python E2-S6_Multi_Model_Comparison/train_additional_models.py
+python E2-S6_Multi_Model_Comparison/compare_all_models.py
+```
+
+Run out-of-sample error analysis and the split-integrity audit:
+
+```bash
+python E2-S7_OOS_Error_Analysis/analyze_oos_errors.py
+python E4-S2_OOS_Split_Integrity_Gate/audit_oos_split_integrity.py
+```
+
+## Tests
+
+Run the project test suites from the repository root:
+
+```bash
+python -m pytest \
+  tests/ \
+  E2-S1_Baseline_Zero_Predictor/tests/ \
+  E2-S2_Train_Minimal_LightGBM_Regressor/tests/ \
+  E2-S3_Leakage_Safe_Walk_Forward_Validation/tests/ \
+  E2-S4_Generate_Canonical_OOS_Prediction_Table/tests/ \
+  E3-S2_Data_Model_Integration_Flow/pipeline/tests/ \
+  E4-S2_OOS_Split_Integrity_Gate/tests/ \
+  E2-S7_OOS_Error_Analysis/tests/ -q
+```
+
+## Main Outputs
+
+| Artifact | Description |
+|---|---|
+| `data/processed/E1-S6_canonical_modeling_dataset.csv` | Canonical modeling dataset |
+| `data/processed/E1-S6_dataset_manifest.json` | Dataset schema, hashes, and provenance |
+| `docs/E1-S6_data_dictionary.csv` | Feature and target definitions |
+| `results/oos_predictions.csv` | Canonical out-of-sample prediction table |
+| `results/oos_predictions_manifest.json` | OOS table manifest |
+| `pipeline_manifest.json` | Aggregated stage contracts and hash chain |
+
+## Reproducibility Note
+
+The default configuration uses `end_date: null`, so a fresh run downloads the latest available SPY observations. Yahoo Finance may also revise historical data. As a result, live runs can differ from the committed artifacts and the metrics reported above.
+
+For a strictly frozen replication, set a fixed end date in `E3-S2_Data_Model_Integration_Flow/pipeline_config.yaml` and use the committed raw dataset and manifests.
+
+## Limitations
+
+- The study evaluates statistical prediction, not net trading profitability.
+- No transaction costs, slippage, turnover, or portfolio constraints are modeled.
+- Results are specific to SPY daily data and the selected feature set.
+- Regime definitions depend on realized volatility and may not capture every form of market drift.
+- Reported model differences are modest and should not be interpreted as causal evidence.
+
+## Contributors
+
+- [Vincent Dao](https://github.com/AIVIETNAM-AIO-VincentDao25)
+- [Phạm Quang Huy](https://github.com/AIVIETNAM-AIO-Huycomputervision)
+- [Jasie Ngo](https://github.com/AIVIETNAM-AIO-ThyNgo)
+
+## License
+
+This project is released under the [MIT License](LICENSE).
